@@ -369,6 +369,15 @@ async fn list_recordings(app: State<'_, App>, date: String) -> Res<Vec<Value>> {
         .collect())
 }
 
+/// Data URLs, null where the camera has no image.
+#[tauri::command]
+async fn clip_thumbnails(app: State<'_, App>, starts: Vec<i64>) -> Res<Value> {
+    let host = app.session.lock().unwrap().as_ref().map(|s| s.host.clone())
+        .ok_or_else(|| err("ERR_NOT_CONNECTED", "not signed in"))?;
+    let dir = runtime::thumbs_dir().join(host);
+    app.helper.call("thumbnails", json!({ "starts": starts, "dir": dir }), SHORT).await
+}
+
 // ---------------------------------------------------------------------------
 // pan / tilt (only when the camera reports a motor)
 // ---------------------------------------------------------------------------
@@ -927,6 +936,7 @@ fn main() {
             let h3 = handle.clone();
             std::thread::spawn(move || {
                 runtime::prune_old_runtimes();
+                runtime::prune_old_thumbs();
                 if let Err(e) = runtime::libmpv() {
                     applog::write(&format!("could not unpack libmpv: {e}"));
                 }
@@ -937,7 +947,7 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             app_info, settings_get, settings_set, set_output_dir, saved_login, connect, disconnect,
-            recording_dates, list_recordings, set_video_rect, set_video_visible, start_live,
+            recording_dates, list_recordings, clip_thumbnails, set_video_rect, set_video_visible, start_live,
             play_file, player_control, player_status, queue_download, cancel_download, downloads,
             clear_finished_downloads, open_path, reveal_path, output_dir, open_link, check_update,
             user_locales, open_locales_folder, log_line, test_camera, take_screenshot, open_external, ptz_info, ptz_move, ptz_goto

@@ -15,6 +15,7 @@ Passwords arrive over stdin only and are never written anywhere.
 from __future__ import annotations
 
 import asyncio
+import base64
 import datetime
 import json
 import os
@@ -35,6 +36,7 @@ for stream in (sys.stdin, _PROTOCOL_OUT, sys.stderr):
 
 from pytapo import Tapo  # noqa: E402
 from pytapo.media_stream._utils import StreamType  # noqa: E402
+from pytapo.media_stream.snapshot import getRecordingSnapshots  # noqa: E402
 from pytapo.version import PYTAPO_VERSION  # noqa: E402
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -86,6 +88,9 @@ def _login_plan(username: str, password: str, cloud: str, prefer: str) -> List[D
     return [admin, camera] if cloud else [camera, admin]
 
 
+THUMBS_PER_CALL = 8
+# a clip without an image gets no answer, only this timeout
+THUMB_TIMEOUT = 4
 FRESH_SECONDS = 60
 STALL_SECONDS = 120
 BUSY_CODES = (-52405, -52407, -52417, -52435)
@@ -99,6 +104,10 @@ def _stream_request(tapo: Tapo, method: str, start: int, end: int) -> Dict[str, 
         params = {"playback": {"client_id": tapo.getUserID(), "channels": [0, 1], "scale": "1/1",
                                "start_time": str(start), "end_time": str(end), "event_type": [1, 2]}}
     return {"type": "request", "seq": 1, "params": {**params, "method": "get"}}
+
+
+def _data_url(jpeg: bytes) -> str:
+    return "data:image/jpeg;base64," + base64.b64encode(jpeg).decode()
 
 
 def _event_types(event: Dict[str, Any]) -> List[int]:
@@ -247,6 +256,37 @@ class Session:
                 events = []
             _label_clips(clips, events, self.time_correction)
         return clips
+
+    def thumbnails(self, req: Dict[str, Any]) -> Dict[str, Optional[str]]:
+        """Data URLs of the camera's detection images, cached as <dir>/<start>.jpg."""
+        tapo = self._need()
+        folder = str(req["dir"])
+        os.makedirs(folder, exist_ok=True)
+        out: Dict[str, Optional[str]] = {}
+        missing: List[int] = []
+        for start in [int(s) for s in req.get("starts", [])][:THUMBS_PER_CALL]:
+            path = os.path.join(folder, f"{start}.jpg")
+            if os.path.exists(path):
+                with open(path, "rb") as f:
+                    out[str(start)] = _data_url(f.read())
+            else:
+                missing.append(start)
+        if missing:
+            tapo.getUserID()  # may log in with an event loop of its own: cache it before ours
+
+            async def fetch() -> None:
+                images = getRecordingSnapshots(tapo, missing, timeout=THUMB_TIMEOUT)
+                for start, image in zip(missing, [i async for i in images]):
+                    out[str(start)] = _data_url(image) if image else None
+                    if image:
+                        with open(os.path.join(folder, f"{start}.jpg"), "wb") as f:
+                            f.write(image)
+
+            try:
+                asyncio.run(fetch())
+            except Exception as exc:  # noqa: BLE001 - camera busy: asked again later
+                print(f"thumbnails unavailable: {exc}", file=sys.stderr)
+        return out
 
     def download(self, req: Dict[str, Any], progress: Callable[[Dict[str, Any]], None]) -> Dict[str, Any]:
         tapo = self._need()
@@ -448,6 +488,8 @@ def main() -> None:
                 result = session.recording_dates(req)
             elif cmd == "list_recordings":
                 result = session.list_recordings(req)
+            elif cmd == "thumbnails":
+                result = session.thumbnails(req)
             elif cmd == "download":
                 result = session.download(
                     req, lambda p: send({"event": "download_progress", "id": req_id, **p})

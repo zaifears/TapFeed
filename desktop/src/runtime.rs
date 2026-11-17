@@ -130,6 +130,23 @@ pub fn helper_exe() -> Result<PathBuf, String> {
 }
 
 /// Remove unpacked parts left by older versions.
+pub fn thumbs_dir() -> PathBuf {
+    data_dir().join("thumbs")
+}
+
+/// The SD card has overwritten such recordings long before.
+pub fn prune_old_thumbs() {
+    let max_age = std::time::Duration::from_secs(60 * 24 * 60 * 60);
+    let Ok(cameras) = std::fs::read_dir(thumbs_dir()) else { return };
+    for file in cameras.flatten().filter_map(|c| std::fs::read_dir(c.path()).ok()).flatten().flatten() {
+        let old = file.metadata().and_then(|m| m.modified()).ok()
+            .and_then(|t| t.elapsed().ok()).is_some_and(|age| age > max_age);
+        if old {
+            let _ = std::fs::remove_file(file.path());
+        }
+    }
+}
+
 pub fn prune_old_runtimes() {
     let keep = [env!("LIBMPV_HASH"), env!("HELPER_HASH")];
     if let Ok(entries) = std::fs::read_dir(data_dir().join("runtime")) {

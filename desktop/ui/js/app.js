@@ -30,6 +30,8 @@ const state = {
   seeking: false,
   dialogOpen: false,
   problems: [],
+  // clip start -> data URL, null if the camera has none
+  thumbs: new Map(),
 };
 
 // ---------------------------------------------------------------- helpers
@@ -365,6 +367,7 @@ $("btnSignOut").addEventListener("click", async () => {
   state.device = null;
   state.clips = [];
   state.dates = new Set();
+  state.thumbs.clear();
   showShell(false);
   await fillSavedLogin();
   setView("login");
@@ -817,7 +820,60 @@ function clipKind(c) {
   }).filter((v, i, all) => all.indexOf(v) === i).join(", ");
 }
 
+// ---------------------------------------------------------------- thumbnails
+// Only for clips in view, a few per call.
+const thumbWanted = new Set();
+let thumbBusy = false;
+const thumbObserver = new IntersectionObserver((entries) => {
+  for (const e of entries) {
+    if (!e.isIntersecting) continue;
+    thumbWanted.add(Number(e.target.dataset.start));
+    thumbObserver.unobserve(e.target);
+  }
+  loadThumbs();
+}, { root: $("clipList"), rootMargin: "200px" });
+
+async function loadThumbs() {
+  // The camera serves one recording stream at a time.
+  const downloading = state.downloads.some((d) => d.state === "downloading");
+  if (thumbBusy || !thumbWanted.size || !state.connected || downloading) return;
+  thumbBusy = true;
+  const starts = [...thumbWanted].slice(0, 8);
+  starts.forEach((s) => thumbWanted.delete(s));
+  try {
+    const got = await invoke("clip_thumbnails", { starts });
+    for (const s of starts) {
+      // Missing key: camera busy, asked again on the next render.
+      if (!(s in got)) continue;
+      state.thumbs.set(s, got[s]);
+      document.querySelectorAll(`img.clip-thumb[data-start="${s}"]`).forEach((img) => {
+        if (got[s]) img.src = got[s];
+      });
+    }
+  } catch (e) {
+    const err = asError(e);
+    invoke("log_line", { line: `thumbnails failed: ${err.code} ${err.message}` }).catch(() => {});
+  } finally {
+    thumbBusy = false;
+  }
+  loadThumbs();
+}
+
+function clipThumb(c) {
+  // The camera keeps an image only for detection recordings.
+  if (!c.motion) return el("span", "clip-thumb");
+  const img = el("img", "clip-thumb");
+  img.alt = "";
+  img.dataset.start = c.start;
+  const url = state.thumbs.get(c.start);
+  if (url) img.src = url;
+  else if (url === undefined) thumbObserver.observe(img);
+  img.addEventListener("click", () => playClip(c));
+  return img;
+}
+
 function renderClips() {
+  thumbObserver.disconnect();
   const list = $("clipList");
   const shown = state.clips.filter((c) => state.filter === "all" || c.motion);
   const n = state.clips.length;
@@ -832,7 +888,7 @@ function renderClips() {
       const li = el("li", "clip");
       if (current && (c.file || clipDownload(c)?.path) === current) li.classList.add("is-current");
       const start = fmtClock(c.start);
-      li.append(el("span", "clip-time", start));
+      li.append(clipThumb(c), el("span", "clip-time", start));
 
       const meta = el("div", "clip-meta");
       meta.append(
@@ -925,6 +981,7 @@ function onDownloads(list) {
   $("dlCount").textContent = active;
   if (state.view === "camera") renderClips();
   if (state.view === "downloads") renderDownloads();
+  loadThumbs();
 }
 
 async function renderDownloads() {
