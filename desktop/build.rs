@@ -9,14 +9,21 @@ fn pack(src: &Path, out_name: &str, hash_env: &str, level: i32) {
     });
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     raw.hash(&mut hasher);
-    println!("cargo:rustc-env={hash_env}={:016x}", hasher.finish());
+    let hash = format!("{:016x}-{level}", hasher.finish());
+    println!("cargo:rustc-env={hash_env}={}", &hash[..16]);
+    let out = PathBuf::from(std::env::var("OUT_DIR").unwrap()).join(out_name);
+    // Reruns when either vendor file changes; skip what is already packed.
+    let stamp = out.with_extension("hash");
+    if out.exists() && std::fs::read_to_string(&stamp).ok().as_deref() == Some(hash.as_str()) {
+        return;
+    }
 
     let mut enc = zstd::stream::Encoder::new(Vec::new(), level).unwrap();
     enc.multithread(std::thread::available_parallelism().map_or(4, |n| n.get() as u32)).unwrap();
     enc.long_distance_matching(true).unwrap();
     std::io::copy(&mut raw.as_slice(), &mut enc).unwrap();
-    let out = PathBuf::from(std::env::var("OUT_DIR").unwrap()).join(out_name);
-    std::fs::write(out, enc.finish().unwrap()).unwrap();
+    std::fs::write(&out, enc.finish().unwrap()).unwrap();
+    std::fs::write(stamp, hash).unwrap();
 }
 
 fn main() {

@@ -1,5 +1,7 @@
 # TapFeed camera helper (helper/tapo_helper.py). The Rust app needs none of this.
 pytapo>=3.4.31
+# pytapo needs it
+aiofiles>=23.0.0
 
 # Freezes the helper into vendor/helper/tapo-helper.zip (helper/build_helper.py)
 pyinstaller>=6.0
