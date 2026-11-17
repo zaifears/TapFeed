@@ -8,3 +8,4 @@ TapFeed is not code-signed yet, and it bundles a small Python runtime for the ca
 
 | Release | File | Detections | Report | SHA-256 |
 |---|---|---|---|---|
+| [`v2.0.0`](https://github.com/zaifears/TapFeed/releases/tag/v2.0.0) | `TapFeed.exe` | 1 / 70 | [report](https://www.virustotal.com/gui/file/c1836268c1bf60fad9b860998b7fea9fc112e3d3dbb9273ed7d04534ce574ef3) | `c1836268c1bf60fad9b860998b7fea9fc112e3d3dbb9273ed7d04534ce574ef3` |
