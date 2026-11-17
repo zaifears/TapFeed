@@ -57,6 +57,8 @@ struct App {
     player_error: Mutex<Option<String>>,
     host_hwnd: Mutex<Option<isize>>,
     media: Mutex<Media>,
+    /// Live view was stopped for a download; resume it when the queue is empty.
+    live_paused: Mutex<bool>,
     downloads: Mutex<Vec<Download>>,
     wake: tokio::sync::Notify,
 }
@@ -99,11 +101,18 @@ fn clip_base(start: i64, end: i64) -> String {
 }
 
 /// An existing download of this clip (.ts from this app, .mp4 from the Python one).
+/// A `.part` file next to it means the download never finished.
 fn existing_file(dir: &Path, start: i64, end: i64) -> Option<PathBuf> {
     let base = clip_base(start, end);
     ["ts", "mp4"].iter().map(|x| dir.join(format!("{base}.{x}"))).find(|p| {
-        p.metadata().map(|m| m.len() > 1024).unwrap_or(false)
+        p.metadata().map(|m| m.len() > 1024).unwrap_or(false) && !part_marker(p).exists()
     })
+}
+
+fn part_marker(path: &Path) -> PathBuf {
+    let mut s = path.as_os_str().to_owned();
+    s.push(".part");
+    PathBuf::from(s)
 }
 
 fn player(app: &App) -> Res<Arc<Mpv>> {
@@ -313,6 +322,7 @@ async fn disconnect(handle: AppHandle, app: State<'_, App>) -> Res<()> {
         let _ = p.command(&["stop"]);
     }
     *app.media.lock().unwrap() = Media::None;
+    *app.live_paused.lock().unwrap() = false;
     *app.session.lock().unwrap() = None;
     {
         let mut list = app.downloads.lock().unwrap();
@@ -436,6 +446,7 @@ const LIVE_TUNING: &[(&str, &str)] = &[
     ("demuxer-lavf-o", "fflags=+nobuffer"),
     ("demuxer-lavf-analyzeduration", "0.5"),
     ("demuxer-lavf-probe-info", "nostreams"),
+    ("demuxer-lavf-probesize", "0"),
 ];
 
 /// Recorded clips: normal playback with exact audio sync and seeking.
@@ -448,6 +459,8 @@ const CLIP_TUNING: &[(&str, &str)] = &[
     ("demuxer-lavf-o", ""),
     ("demuxer-lavf-analyzeduration", "0"),
     ("demuxer-lavf-probe-info", "auto"),
+    // ffmpeg cannot identify the camera's audio (0x90) and would read 5 MB (~20 s) first.
+    ("demuxer-lavf-probesize", "524288"),
 ];
 
 fn tune(p: &Mpv, settings: &[(&str, &str)]) {
@@ -460,7 +473,12 @@ fn tune(p: &Mpv, settings: &[(&str, &str)]) {
 
 #[tauri::command]
 fn start_live(app: State<App>, quality: String) -> Res<()> {
-    let p = player(&app)?;
+    *app.live_paused.lock().unwrap() = false;
+    load_live(&app, &quality)
+}
+
+fn load_live(app: &App, quality: &str) -> Res<()> {
+    let p = player(app)?;
     let url = {
         let s = app.session.lock().unwrap();
         let s = s.as_ref().ok_or_else(|| err("ERR_NOT_CONNECTED", "not signed in"))?;
@@ -479,8 +497,9 @@ fn start_live(app: State<App>, quality: String) -> Res<()> {
     Ok(())
 }
 
+/// `growing`: still downloading; mpv keeps reading as it grows.
 #[tauri::command]
-fn play_file(app: State<App>, path: String) -> Res<()> {
+fn play_file(app: State<App>, path: String, growing: Option<bool>) -> Res<()> {
     if !Path::new(&path).exists() {
         return Err(err("ERR_FILE_MISSING", path));
     }
@@ -488,7 +507,9 @@ fn play_file(app: State<App>, path: String) -> Res<()> {
     p.clear_log();
     p.set("pause", "no").map_err(|e| err("ERR_PLAYBACK", e))?;
     tune(&p, CLIP_TUNING);
-    p.command(&["loadfile", &path]).map_err(|e| err("ERR_PLAYBACK_OPEN", e))?;
+    let url = if growing == Some(true) { format!("appending://{path}") } else { path.clone() };
+    p.command(&["loadfile", &url]).map_err(|e| err("ERR_PLAYBACK_OPEN", e))?;
+    *app.live_paused.lock().unwrap() = false;
     *app.media.lock().unwrap() = Media::Clip(path);
     Ok(())
 }
@@ -499,6 +520,7 @@ fn player_control(app: State<App>, action: String, value: Option<String>) -> Res
     let r = match action.as_str() {
         "stop" => {
             *app.media.lock().unwrap() = Media::None;
+            *app.live_paused.lock().unwrap() = false;
             p.command(&["stop"])
         }
         "pause" => p.command(&["cycle", "pause"]),
@@ -575,6 +597,7 @@ fn player_status(app: State<App>) -> Value {
     let num = |k: &str| p.get(k).and_then(|v| v.parse::<f64>().ok());
     json!({
         "ready": true,
+        "livePaused": *app.live_paused.lock().unwrap(),
         "mode": match &media { Media::None => "none", Media::Live => "live", Media::Clip(_) => "clip" },
         "path": match &media { Media::Clip(p) => Some(p.clone()), _ => None },
         "state": ev.state,
@@ -595,8 +618,9 @@ fn player_status(app: State<App>) -> Value {
 // downloads
 // ---------------------------------------------------------------------------
 
+/// `first`: ahead of waiting downloads.
 #[tauri::command]
-fn queue_download(handle: AppHandle, app: State<App>, start: i64, end: i64) -> Res<Download> {
+fn queue_download(handle: AppHandle, app: State<App>, start: i64, end: i64, first: Option<bool>) -> Res<Download> {
     let key = clip_key(start, end);
     let dir = config::output_dir();
     let path = dir.join(format!("{}.ts", clip_base(start, end)));
@@ -613,7 +637,11 @@ fn queue_download(handle: AppHandle, app: State<App>, start: i64, end: i64) -> R
             progress: 0.0,
             error: None,
         };
-        list.push(item.clone());
+        let at = match first {
+            Some(true) => list.iter().position(|d| d.state == "queued").unwrap_or(list.len()),
+            _ => list.len(),
+        };
+        list.insert(at, item.clone());
         item
     };
     app.wake.notify_one();
@@ -663,9 +691,11 @@ async fn download_worker(handle: AppHandle) {
             })
         };
         let Some(job) = next else {
+            resume_live(&handle);
             handle.state::<App>().wake.notified().await;
             continue;
         };
+        pause_live(&handle);
         emit_downloads(&handle);
 
         let result = handle
@@ -673,6 +703,7 @@ async fn download_worker(handle: AppHandle) {
             .helper
             .call("download", json!({ "start": job.start, "end": job.end, "path": job.path }), LONG)
             .await;
+        let failed = result.is_err();
         {
             let app = handle.state::<App>();
             let mut list = app.downloads.lock().unwrap();
@@ -691,7 +722,55 @@ async fn download_worker(handle: AppHandle) {
                 }
             }
         }
+        if failed {
+            discard_partial(&handle, &job.path);
+        }
         emit_downloads(&handle);
+    }
+}
+
+/// The camera is too slow to serve live view and a download at once.
+fn pause_live(handle: &AppHandle) {
+    let app = handle.state::<App>();
+    let mut media = app.media.lock().unwrap();
+    if *media == Media::Live {
+        if let Ok(p) = player(&app) {
+            let _ = p.command(&["stop"]);
+        }
+        *media = Media::None;
+        *app.live_paused.lock().unwrap() = true;
+    }
+}
+
+fn resume_live(handle: &AppHandle) {
+    let app = handle.state::<App>();
+    if std::mem::take(&mut *app.live_paused.lock().unwrap()) && *app.media.lock().unwrap() == Media::None {
+        let quality = config::get_str(&config::load(), "live_stream_quality");
+        if let Err(e) = load_live(&app, &quality) {
+            applog::write(&format!("could not resume live view: {} {}", e.code, e.message));
+        }
+    }
+}
+
+/// Delete an unfinished download, stopping its playback first.
+fn discard_partial(handle: &AppHandle, path: &str) {
+    let app = handle.state::<App>();
+    let mut media = app.media.lock().unwrap();
+    if *media == Media::Clip(path.to_string()) {
+        if let Ok(p) = player(&app) {
+            let _ = p.command(&["stop"]);
+        }
+        *media = Media::None;
+    }
+    drop(media);
+    let path = Path::new(path);
+    // mpv may still hold the file; a leftover keeps its .part marker.
+    for _ in 0..10 {
+        if std::fs::remove_file(path).is_ok() || !path.exists() {
+            let _ = std::fs::remove_file(part_marker(path));
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(100));
     }
 }
 
@@ -836,6 +915,7 @@ fn main() {
                 player_error: Mutex::new(None),
                 host_hwnd: Mutex::new(None),
                 media: Mutex::new(Media::None),
+                live_paused: Mutex::new(false),
                 downloads: Mutex::new(Vec::new()),
                 wake: tokio::sync::Notify::new(),
             });

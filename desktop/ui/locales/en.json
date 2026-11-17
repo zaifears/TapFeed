@@ -59,6 +59,7 @@
     "hd": "HD",
     "sd": "SD",
     "stopped": "Live view is stopped.",
+    "livePaused": "Live view is paused while a recording downloads.",
     "startLive": "Start live view",
     "opening": "Connecting to the video…",
     "playerStarting": "Getting the player ready…",
@@ -126,7 +127,7 @@
     "end": "End",
     "type": "Type",
     "actions": "Actions",
-    "downloadToPlay": "Downloading this recording, then it plays.",
+    "downloadToPlay": "Loading this recording…",
     "until": "Until {time}, {length}",
     "playClip": "Play recording from {time}",
     "downloadClip": "Download recording from {time}"

@@ -34,10 +34,11 @@ for stream in (sys.stdin, _PROTOCOL_OUT, sys.stderr):
         pass
 
 from pytapo import Tapo  # noqa: E402
-from pytapo.media_stream.downloader import Downloader  # noqa: E402
+from pytapo.media_stream._utils import StreamType  # noqa: E402
 from pytapo.version import PYTAPO_VERSION  # noqa: E402
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from tswriter import TsWriter  # noqa: E402
 from errors import (  # noqa: E402
     CTX_CONNECT,
     CTX_DOWNLOAD,
@@ -83,6 +84,22 @@ def _login_plan(username: str, password: str, cloud: str, prefer: str) -> List[D
         return [admin, camera]
     # Documented pytapo method first when a separate cloud password was given.
     return [admin, camera] if cloud else [camera, admin]
+
+
+FRESH_SECONDS = 60
+STALL_SECONDS = 120
+BUSY_CODES = (-52405, -52407, -52417, -52435)
+
+
+def _stream_request(tapo: Tapo, method: str, start: int, end: int) -> Dict[str, Any]:
+    if method == "download":
+        params = {"download": {"client_id": tapo.getUserID(), "channels": [0], "media_type": 0,
+                               "start_time": str(start), "end_time": str(end), "player_id": tapo.playerID}}
+    else:
+        params = {"playback": {"client_id": tapo.getUserID(), "channels": [0, 1], "scale": "1/1",
+                               "start_time": str(start), "end_time": str(end), "event_type": [1, 2]}}
+    return {"type": "request", "seq": 1, "params": {**params, "method": "get"}}
+
 
 
 class Session:
@@ -200,60 +217,75 @@ class Session:
         tapo = self._need()
         start, end = int(req["start"]), int(req["end"])
         path = os.path.abspath(str(req["path"]))
-        folder, name = os.path.split(path)
-        os.makedirs(folder, exist_ok=True)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        if time.time() - FRESH_SECONDS - self.time_correction < end:
+            raise HelperError("ERR_DOWNLOAD_EMPTY", "The recording is still in progress.")
         if not self.busy.acquire(blocking=False):
             raise HelperError("ERR_CAMERA_BUSY", "Another download is already running.")
         self.cancel.clear()
         try:
-            loop = asyncio.new_event_loop()
-            try:
-                loop.run_until_complete(self._download(tapo, start, end, folder, name, progress))
-            finally:
-                loop.close()
+            # .part marks it unfinished; the app deletes both files on failure
+            open(path + ".part", "wb").close()
+            with open(path, "wb") as out:
+                # getUserID() may log in with an event loop of its own, so not inside ours
+                requests = [_stream_request(tapo, m, start, end) for m in ("download", "playback")]
+                asyncio.run(self._download(tapo, requests, end - start, TsWriter(out), progress))
         finally:
             self.busy.release()
 
         if self.cancel.is_set():
-            try:
-                os.remove(path)
-            except OSError:
-                pass
             raise HelperError("ERR_DOWNLOAD_CANCELLED", "Download cancelled.")
-        if not os.path.exists(path) or os.path.getsize(path) <= 1024:
-            raise HelperError("ERR_DOWNLOAD_EMPTY", f"The camera sent no video for this clip ({name}).")
+        if os.path.getsize(path) <= 1024:
+            raise HelperError("ERR_DOWNLOAD_EMPTY", f"The camera sent no video for this clip ({os.path.basename(path)}).")
+        os.remove(path + ".part")
         return {"path": path, "bytes": os.path.getsize(path)}
 
-    async def _download(self, tapo, start, end, folder, name, progress) -> None:
-        downloader = Downloader(
-            tapo=tapo,
-            startTime=start,
-            endTime=end,
-            timeCorrection=self.time_correction,
-            outputDirectory=folder + os.sep,
-            fileName=name,
-            output="ts",
-            method="download",
-            window_size=200,
-        )
-        stream = downloader.download()
-        try:
-            async for status in stream:
-                if self.cancel.is_set():
-                    break
-                action = status.get("currentAction", "Downloading")
-                if action == "Camera busy":
-                    raise HelperError(
-                        "ERR_CAMERA_BUSY",
-                        f"Camera busy (code {status.get('errorCode')}).",
-                    )
-                progress({
-                    "action": action,
-                    "progress": status.get("progress") or 0,
-                    "total": status.get("total") or (end - start),
-                })
-        finally:
-            await stream.aclose()
+    async def _download(self, tapo, requests, total, writer, progress) -> None:
+        for req in requests:
+            method = next(iter(req["params"]))
+            last_report = 0.0
+            session = tapo.getMediaSession(StreamType.Download)
+            session.set_window_size(200)
+            async with session:
+                stream = session.transceive(json.dumps(req))
+                try:
+                    while not self.cancel.is_set():
+                        try:
+                            resp = await asyncio.wait_for(stream.__anext__(), timeout=STALL_SECONDS)
+                        except StopAsyncIteration:
+                            return
+                        except asyncio.TimeoutError:
+                            raise HelperError("ERR_CAMERA_TIMEOUT", "The camera stopped sending the recording.")
+                        if resp.mimetype == "video/mp2t":
+                            done = writer.feed(resp.plaintext)
+                            now = time.monotonic()
+                            if now - last_report >= 0.5:
+                                last_report = now
+                                progress({"action": "Downloading", "progress": min(done, total), "total": total})
+                            # playback runs at 1x and past end_time; download stops by itself
+                            if method == "playback" and done >= total:
+                                return
+                        elif resp.mimetype == "application/json":
+                            try:
+                                msg = json.loads(resp.plaintext.decode())
+                            except ValueError:
+                                continue
+                            params = msg.get("params") or {}
+                            code = params.get("error_code")
+                            if msg.get("type") == "response" and code in BUSY_CODES:
+                                raise HelperError("ERR_CAMERA_BUSY", f"Camera busy (code {code}).")
+                            if msg.get("type") == "response" and code not in (0, None):
+                                if method == "download" and writer.out.tell() == 0:
+                                    break  # older firmware: no download request, use playback
+                                raise HelperError("ERR_DOWNLOAD_FAILED", f"Camera refused the recording (code {code}).")
+                            if params.get("event_type") == "stream_status" and params.get("status") == "finished":
+                                return
+                    else:
+                        return
+                finally:
+                    await stream.aclose()
+
+
 
     # -- pan / tilt -----------------------------------------------------------
     # Only offered when the camera reports a motor. Moves are small relative

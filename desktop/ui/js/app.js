@@ -506,12 +506,23 @@ $("btnBack10").addEventListener("click", () => invoke("player_control", { action
 $("btnFwd10").addEventListener("click", () => invoke("player_control", { action: "seek", value: "10" }).catch(() => {}));
 $("btnMute").addEventListener("click", () => invoke("player_control", { action: "mute" }).catch(() => {}));
 $("volume").addEventListener("input", (e) => invoke("player_control", { action: "volume", value: e.target.value }).catch(() => {}));
-$("seek").addEventListener("input", () => (state.seeking = true));
+$("seek").addEventListener("input", (e) => {
+  state.seeking = true;
+  // mpv cannot seek past what is on disk yet.
+  const part = downloadedPart(state.status);
+  const max = Math.max(0, Math.floor(part * 1000) - 20);
+  if (part < 1 && e.target.value > max) e.target.value = max;
+});
 $("seek").addEventListener("change", (e) => {
-  const d = state.status.duration || 0;
+  const d = clipLength(state.status);
   invoke("player_control", { action: "seek_to", value: String((e.target.value / 1000) * d) }).catch(() => {});
   state.seeking = false;
 });
+
+function downloadedPart(st) {
+  const d = state.downloads.find((x) => x.path === st.path && x.state === "downloading");
+  return d ? d.progress : 1;
+}
 
 async function setFullscreen(on) {
   await appWindow.setFullscreen(on).catch(() => {});
@@ -547,6 +558,17 @@ window.addEventListener("keydown", (e) => {
 });
 $("video").addEventListener("dblclick", () => setFullscreen(!document.body.classList.contains("is-fullscreen")));
 
+function playingClip(st) {
+  if (st.mode !== "clip" || !st.path) return null;
+  return state.clips.find((x) => x.file === st.path) || state.downloads.find((d) => d.path === st.path) || null;
+}
+
+// A growing file has no final length yet.
+function clipLength(st) {
+  const c = playingClip(st);
+  return c ? c.end - c.start : st.duration || 0;
+}
+
 function renderPlayer(st) {
   const controls = $("controls");
   const live = st.mode === "live";
@@ -570,13 +592,14 @@ function renderPlayer(st) {
   const tip = $("clipTip");
   if (tip.hidden === clip) {
     tip.hidden = !clip;
+    $("quality").hidden = clip;
     lastRect = "";
     requestAnimationFrame(syncRect);
   }
   renderPtz();
   $("btnSnapshot").disabled = !st.ready || st.mode === "none" || st.state !== "playing";
   if (clip && st.path) {
-    const c = state.clips.find((x) => x.file === st.path) || state.downloads.find((d) => d.path === st.path);
+    const c = playingClip(st);
     $("playerTitle").textContent = c
       ? t("camera.clipTitle", { date: fmtDay(new Date(c.start * 1000), { day: "numeric", month: "short" }), time: fmtClock(c.start) })
       : fileName(st.path);
@@ -585,8 +608,11 @@ function renderPlayer(st) {
   }
 
   $("timeNow").textContent = live ? "" : fmtLen(st.position);
-  $("timeTotal").textContent = fmtLen(st.duration);
-  if (clip && !state.seeking && st.duration) $("seek").value = Math.round(((st.position || 0) / st.duration) * 1000);
+  const length = clipLength(st);
+  $("timeTotal").textContent = fmtLen(length);
+  if (clip && !state.seeking && length) $("seek").value = Math.round(((st.position || 0) / length) * 1000);
+  $("seek").style.setProperty("--played", `${$("seek").value / 10}%`);
+  $("seek").style.setProperty("--loaded", `${downloadedPart(st) * 100}%`);
 
   // Message shown in the video box whenever the picture is not
   const msg = $("videoMsgText");
@@ -610,7 +636,7 @@ function renderPlayer(st) {
     detail.hidden = false;
     btn.textContent = t("camera.retry");
   } else if (st.mode === "none") {
-    msg.textContent = t("camera.stopped");
+    msg.textContent = t(st.livePaused ? "camera.livePaused" : "camera.stopped");
   } else if (st.state !== "playing") {
     msg.textContent = t("camera.opening");
     btn.hidden = true;
@@ -796,7 +822,7 @@ function renderClips() {
   list.replaceChildren(
     ...shown.map((c) => {
       const li = el("li", "clip");
-      if (current && c.file === current) li.classList.add("is-current");
+      if (current && (c.file || clipDownload(c)?.path) === current) li.classList.add("is-current");
       const start = fmtClock(c.start);
       li.append(el("span", "clip-time", start));
 
@@ -835,9 +861,9 @@ function renderClips() {
   );
 }
 
-async function queueDownload(c) {
+async function queueDownload(c, first = false) {
   try {
-    await invoke("queue_download", { start: c.start, end: c.end });
+    await invoke("queue_download", { start: c.start, end: c.end, first });
   } catch (e) {
     const err = asError(e);
     addProblem(err.code, err.message, "download");
@@ -858,7 +884,7 @@ async function playClip(c) {
   }
   state.pendingPlay = c.key;
   toast(t("clips.downloadToPlay"));
-  queueDownload(c);
+  queueDownload(c, true);
 }
 
 // ---------------------------------------------------------------- downloads
@@ -866,6 +892,10 @@ function onDownloads(list) {
   const before = new Map(state.downloads.map((d) => [d.key, d.state]));
   state.downloads = list;
   for (const d of list) {
+    if (state.pendingPlay === d.key && d.state === "downloading" && d.progress > 0) {
+      state.pendingPlay = null;
+      invoke("play_file", { path: d.path, growing: true }).catch(() => {});
+    }
     const was = before.get(d.key);
     if (was === d.state) continue;
     if (d.state === "done" && was) {

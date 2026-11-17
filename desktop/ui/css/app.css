@@ -246,7 +246,7 @@ input[type="range"]:disabled { opacity: 0.55; cursor: not-allowed; }
 .stage > * { flex: 0 0 auto; }
 .stage > .video { flex: 1 1 auto; }
 .stage-head { display: flex; align-items: center; gap: var(--space-md); min-width: 0; flex-wrap: wrap; }
-.stage-head h1 { font-size: var(--text-lg); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.stage-head h1 { max-width: none; font-size: var(--text-lg); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 .plate-live {
   padding: var(--space-3xs) var(--space-xs);
   background: var(--color-accent);
@@ -254,7 +254,7 @@ input[type="range"]:disabled { opacity: 0.55; cursor: not-allowed; }
   font-weight: 600;
   font-size: var(--text-xs);
 }
-#quality { margin-left: auto; }
+#quality, #btnBackLive { margin-left: auto; }
 .clip-tip {
   display: flex;
   align-items: center;
@@ -290,7 +290,13 @@ input[type="range"]:disabled { opacity: 0.55; cursor: not-allowed; }
   background: var(--color-paper-2);
 }
 .controls .time { font-size: var(--text-sm); color: var(--color-ink-2); min-width: 3.5em; text-align: center; }
-.seek { flex: 1; min-width: 6rem; }
+.seek { flex: 1; min-width: 6rem; -webkit-appearance: none; appearance: none; --played: 0%; --loaded: 100%; }
+/* played, downloaded, not yet downloaded */
+.seek::-webkit-slider-runnable-track {
+  height: 4px;
+  background: linear-gradient(to right, var(--color-accent) var(--played), var(--color-muted) var(--played) var(--loaded), var(--color-rule) var(--loaded));
+}
+.seek::-webkit-slider-thumb { -webkit-appearance: none; width: 14px; height: 14px; margin-top: -5px; border-radius: 50%; background: var(--color-accent); }
 .controls-gap { flex: 1; }
 .seek:not([hidden]) ~ .controls-gap { flex: 0 0 var(--space-xs); }
 .volume { width: 7rem; }
