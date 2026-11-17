@@ -15,6 +15,7 @@ Previously named **Tapo-Viewer** ([old address](https://github.com/zaifears/tapo
 [![Powered by PyTapo](https://img.shields.io/badge/Powered%20By-PyTapo%20v3.4.31-00A4E4?style=for-the-badge&logo=github&logoColor=white)](https://github.com/JurajNyiri/pytapo)
 [![License](https://img.shields.io/badge/License-MIT-green?style=for-the-badge)](LICENSE)
 [![Privacy](https://img.shields.io/badge/Camera%20traffic-Local%20only-success?style=for-the-badge)](#privacy)
+[![VirusTotal](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Fzaifears%2FTapFeed%2Fmain%2F.github%2Fbadges%2Fvirustotal.json&style=for-the-badge&logo=virustotal&logoColor=white)](docs/SECURITY-SCAN.md)
 
 [Download](https://github.com/zaifears/TapFeed/releases/latest) | [Screens](#screens) | [Features](#features) | [Cameras](#supported-tapo-cameras) | [FAQ](#faq) | [Languages](#languages)
 
@@ -109,6 +110,8 @@ To try a translation without building, use **Settings, Open language folder** in
 ## Privacy
 
 TapFeed talks to your camera over your own network. Passwords are never sent anywhere else. The only internet request is the optional update check to GitHub, which sends no camera details.
+
+Every release is scanned by VirusTotal when it is published. See the [scan results and checksums](docs/SECURITY-SCAN.md).
 
 ## Build from source
 

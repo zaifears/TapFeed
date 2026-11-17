@@ -1,0 +1,105 @@
+name: VirusTotal scan
+
+# Scans TapFeed.exe from a GitHub release with VirusTotal, then records the
+# result: the README badge, a row in docs/SECURITY-SCAN.md, and a line in the
+# release notes. Needs the repository secret VIRUSTOTAL_API_KEY.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to scan (blank = latest release)"
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+concurrency:
+  group: virustotal
+  cancel-in-progress: false
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Check out main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Pick the release
+        id: release
+        run: |
+          tag="${{ github.event.release.tag_name || inputs.tag }}"
+          if [ -z "$tag" ]; then
+            tag=$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName -q .tagName)
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "Scanning release $tag"
+
+      - name: Download TapFeed.exe
+        run: |
+          gh release download "${{ steps.release.outputs.tag }}" \
+            --repo "$GITHUB_REPOSITORY" --pattern TapFeed.exe --dir "$RUNNER_TEMP/release"
+          ls -l "$RUNNER_TEMP/release"
+
+      - name: Scan with VirusTotal
+        id: virustotal
+        env:
+          VT_API_KEY: ${{ secrets.VIRUSTOTAL_API_KEY }}
+        run: |
+          chmod +x .github/scripts/virustotal-scan.sh
+          # The release is already public; a high count must still be recorded
+          # honestly rather than hidden by a failed job.
+          .github/scripts/virustotal-scan.sh "$RUNNER_TEMP/release/TapFeed.exe" || echo "::warning::VirusTotal reported detections over the threshold"
+
+      - name: Record the result
+        if: steps.virustotal.outputs.status == 'completed'
+        env:
+          FLAGGED: ${{ steps.virustotal.outputs.detections }}
+          TOTAL: ${{ steps.virustotal.outputs.total }}
+          SHA256: ${{ steps.virustotal.outputs.sha256 }}
+          PERMALINK: ${{ steps.virustotal.outputs.permalink }}
+          VERSION: ${{ steps.release.outputs.tag }}
+        run: |
+          colour=brightgreen
+          [ "$FLAGGED" -gt 0 ] && colour=orange
+          [ "$FLAGGED" -ge 5 ] && colour=red
+          printf '{"schemaVersion":1,"label":"VirusTotal","message":"%s/%s","color":"%s"}\n' \
+            "$FLAGGED" "$TOTAL" "$colour" > .github/badges/virustotal.json
+
+          ref="https://github.com/${GITHUB_REPOSITORY}/releases/tag/$VERSION"
+          row="| [\`$VERSION\`]($ref) | \`TapFeed.exe\` | $FLAGGED / $TOTAL | [report]($PERMALINK) | \`$SHA256\` |"
+          # Newest first, under the table's separator line; replace an earlier
+          # row for the same file so a re-scan does not duplicate it.
+          grep -v "$SHA256" docs/SECURITY-SCAN.md > docs/SECURITY-SCAN.md.tmp || true
+          awk -v row="$row" '{print} /^\|---/ && !done {print row; done=1}' \
+            docs/SECURITY-SCAN.md.tmp > docs/SECURITY-SCAN.md
+          rm -f docs/SECURITY-SCAN.md.tmp
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .github/badges/virustotal.json docs/SECURITY-SCAN.md
+          if git diff --cached --quiet; then
+            echo "No change to record."
+          else
+            git commit -m "Record the $VERSION VirusTotal scan [skip ci]"
+            git push origin HEAD:main
+          fi
+
+      - name: Add the result to the release notes
+        if: steps.virustotal.outputs.status == 'completed'
+        env:
+          NOTE: ${{ steps.virustotal.outputs.release_note }}
+          VERSION: ${{ steps.release.outputs.tag }}
+        run: |
+          gh release view "$VERSION" --repo "$GITHUB_REPOSITORY" --json body -q .body > body.md
+          # Drop an earlier VirusTotal line, then add the current one at the end.
+          grep -v '^\*\*VirusTotal:\*\*' body.md > body.new || true
+          printf '\n%s\n' "$NOTE" >> body.new
+          gh release edit "$VERSION" --repo "$GITHUB_REPOSITORY" --notes-file body.new
