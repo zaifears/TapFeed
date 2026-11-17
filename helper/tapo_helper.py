@@ -101,6 +101,34 @@ def _stream_request(tapo: Tapo, method: str, start: int, end: int) -> Dict[str, 
     return {"type": "request", "seq": 1, "params": {**params, "method": "get"}}
 
 
+def _event_types(event: Dict[str, Any]) -> List[int]:
+    """Main type (alarm_type) first, then the rest of the events_1 bitmask (bit n-1 = type n)."""
+    main = int(event.get("alarm_type") or 0)
+    # shortcut: events_2 (types 33-64) assumed by analogy, never seen sent
+    mask = int(event.get("events_1") or 0) | int(event.get("events_2") or 0) << 32
+    seen = [n for n in range(1, 65) if mask >> (n - 1) & 1]
+    return ([main] if main else []) + [n for n in seen if n != main]
+
+
+def _label_clips(clips: List[Dict[str, Any]], events: List[Dict[str, Any]], correction: int) -> None:
+    """Each clip takes the types of the event overlapping it most."""
+    for c in clips:
+        best, overlap = None, 0
+        for e in events:
+            # pytapo adds the clock correction to event times, not to recordings
+            s, t = int(e.get("start_time", 0)) - correction, int(e.get("end_time", 0)) - correction
+            o = min(t, c["end"]) - max(s, c["start"])
+            if o > overlap:
+                best, overlap = e, o
+        if best is not None:
+            c["types"] = [n for n in _event_types(best) if n != 1]
+
+
+def _selfcheck_labels() -> None:
+    clips = [{"start": 100, "end": 200, "types": []}, {"start": 300, "end": 330, "types": []}]
+    _label_clips(clips, [{"start_time": 103, "end_time": 203, "alarm_type": 6, "events_1": 162}], 3)
+    assert clips[0]["types"] == [6, 2, 8] and clips[1]["types"] == [], clips
+
 
 class Session:
     def __init__(self) -> None:
@@ -209,8 +237,15 @@ class Session:
             if start <= 0 or end <= start:
                 continue
             kind = str(data.get("vedio_type") or data.get("video_type") or data.get("type") or "1")
-            clips.append({"start": start, "end": end, "motion": kind != "1"})
+            clips.append({"start": start, "end": end, "motion": kind != "1", "types": []})
         clips.sort(key=lambda c: c["start"])
+        if clips:
+            try:
+                events = tapo.getEvents(clips[0]["start"] - 60, clips[-1]["end"] + 60)
+            except Exception as exc:  # noqa: BLE001 - older firmware has no detection list
+                print(f"detection list unavailable: {exc}", file=sys.stderr)
+                events = []
+            _label_clips(clips, events, self.time_correction)
         return clips
 
     def download(self, req: Dict[str, Any], progress: Callable[[Dict[str, Any]], None]) -> Dict[str, Any]:
@@ -284,7 +319,6 @@ class Session:
                         return
                 finally:
                     await stream.aclose()
-
 
 
     # -- pan / tilt -----------------------------------------------------------

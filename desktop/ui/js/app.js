@@ -809,6 +809,14 @@ function clipDownload(c) {
   return state.downloads.filter((d) => d.key === c.key).pop() || null;
 }
 
+function clipKind(c) {
+  if (!c.types?.length) return t(c.motion ? "clips.motion" : "clips.continuous");
+  return c.types.map((n) => {
+    const name = t(`clips.types.${n}`);
+    return name === `clips.types.${n}` ? t("clips.detection") : name;
+  }).filter((v, i, all) => all.indexOf(v) === i).join(", ");
+}
+
 function renderClips() {
   const list = $("clipList");
   const shown = state.clips.filter((c) => state.filter === "all" || c.motion);
@@ -828,7 +836,7 @@ function renderClips() {
 
       const meta = el("div", "clip-meta");
       meta.append(
-        el("span", `kind${c.motion ? " kind--motion" : ""}`, t(c.motion ? "clips.motion" : "clips.continuous")),
+        el("span", `kind${c.motion ? " kind--motion" : ""}`, clipKind(c)),
         el("span", "num", t("clips.until", { time: fmtClock(c.end), length: fmtLen(c.end - c.start) })),
       );
       li.append(meta);

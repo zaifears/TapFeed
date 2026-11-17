@@ -361,7 +361,7 @@ async fn list_recordings(app: State<'_, App>, date: String) -> Res<Vec<Value>> {
             let file = existing_file(&dir, s, e);
             let dl = downloads.iter().rev().find(|d| d.key == key);
             json!({
-                "key": key, "start": s, "end": e, "motion": c["motion"],
+                "key": key, "start": s, "end": e, "motion": c["motion"], "types": c["types"],
                 "file": file,
                 "download": dl.map(|d| json!({"state": d.state, "progress": d.progress})),
             })
