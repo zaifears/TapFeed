@@ -1,42 +1,40 @@
-# Media Recordings & Temp Video Streams
+# Old Tapo-Viewer 1.x (Python) app and leftovers, kept locally only
+.old/
+
+# Build output
+dist/
+build/
+desktop/target/
+desktop/gen/
+*.exe
+*.spec
+
+# Downloaded or generated runtime parts (see README, Build from source)
+vendor/
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+
+# Local data: recordings, screenshots, settings, logs
 recordings/
-*.mp4
 *.ts
+*.mp4
 *.m3u
 *.alaw
 *.mulaw
 *.aac
-
-# Python Virtual Environment & Bytecode
-.venv/
-venv/
-ENV/
-env/
-__pycache__/
-*.py[cod]
-*$py.class
+config.json
 *.log
 
-# PyInstaller Build Artifacts & Binaries
-build/
-dist/
-*.spec
-!TapoViewer.spec
-*.exe
-vendor/
+# Design tool caches
+.hallmark/
+.impeccable/
 
-# User Configuration & Local Credentials
-config.json
-.user_uploaded/
-.system_generated/
-
-# Temporary crops & images
-row2_crop.png
-*.png.tmp
-
-# OS & IDE metadata
+# OS and editors
 .DS_Store
 Thumbs.db
 .idea/
 .vscode/
-*.swp

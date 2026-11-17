@@ -1,0 +1,21 @@
+# TapFeed
+
+> TapFeed (formerly Tapo-Viewer) is a free, open-source Windows 10/11 app for TP-Link Tapo security cameras. It shows live video (RTSP, HD or SD, with sound), lists and downloads the recordings on the camera's microSD card by calendar day, takes screenshots, and pans and tilts cameras that have a motor. It talks to the camera on the local network only; no Tapo Care subscription or cloud is needed. MIT License.
+
+- Download: https://github.com/zaifears/TapFeed/releases/latest (one file, TapFeed.exe, no install)
+- Source and issues: https://github.com/zaifears/TapFeed (previously github.com/zaifears/tapo-viewer, which redirects)
+- Built with: Rust and Tauri 2 (window and logic), libmpv (video), and pytapo by Juraj Nyíri (camera connection, via a bundled Python helper)
+
+## How to connect
+
+- Camera IP: Tapo app, camera, Settings, Device info.
+- Camera Account (for live video): Tapo app, camera, Settings, Advanced settings, Camera Account.
+- Some cameras also need the Tapo app password to list and download recordings; tick "My Tapo app password is different".
+
+## Facts
+
+- Recordings download as .ts video files, which VLC, mpv and most players open.
+- Saved passwords are stored only in Windows Credential Manager, and only when the user ticks "Remember on this PC".
+- Battery-powered Tapo cameras usually do not offer RTSP, so live view will not work with them.
+- Interface text comes from JSON files in desktop/ui/locales; new translations are welcome.
+- TapFeed is not affiliated with TP-Link.

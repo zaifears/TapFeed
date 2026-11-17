@@ -1,0 +1,517 @@
+{
+  "_meta": {
+    "name": "English",
+    "direction": "ltr",
+    "note": "Copy this file to add a language. Translate the values, keep the keys and the {placeholders}."
+  },
+  "app": {
+    "name": "TapFeed",
+    "loading": "Starting…",
+    "formerly": "Previously named Tapo-Viewer"
+  },
+  "nav": {
+    "camera": "Camera",
+    "downloads": "Downloads",
+    "problems": "Problems",
+    "settings": "Settings",
+    "signOut": "Sign out",
+    "main": "Main",
+    "signIn": "Sign in",
+    "about": "About"
+  },
+  "login": {
+    "title": "Connect your camera",
+    "intro": "Use the Camera Account you created in the Tapo app.",
+    "host": "Camera IP address",
+    "username": "Camera Account username",
+    "password": "Camera Account password",
+    "cloudToggle": "My Tapo app password is different",
+    "cloudPassword": "Tapo app password",
+    "remember": "Remember on this PC",
+    "show": "Show",
+    "hide": "Hide",
+    "connect": "Connect",
+    "connecting": "Connecting…",
+    "helpTitle": "First time?",
+    "help1": "In the Tapo app, open the camera, then Settings, Advanced settings, Camera Account.",
+    "help2": "Create a username and password there. That is the Camera Account.",
+    "help3": "The camera and this PC must be on the same network.",
+    "missing": "Enter the camera IP address, username and password.",
+    "hostPlaceholder": "192.168.0.103",
+    "test": "Test",
+    "testing": "Looking for the camera…",
+    "testOk": "Camera found. Live video and the control connection both answer.",
+    "testNoVideo": "Something answers there, but not on the live video port. Check that it is the camera.",
+    "testNoControl": "Live video answers, but the control connection does not. Recordings may not load.",
+    "testNone": "Nothing answered at that address. Check the IP in the Tapo app under Device info.",
+    "testBadHost": "Enter only the numbers, like 192.168.0.103.",
+    "help4": "The camera IP is in the Tapo app: open the camera, then Settings, Device info.",
+    "checking": "Looking for the camera…",
+    "signingIn": "Signing in. This can take up to 30 seconds.",
+    "savedPassword": "Saved on this PC"
+  },
+  "camera": {
+    "live": "Live",
+    "liveTitle": "Live view",
+    "clipTitle": "Recording, {date} {time}",
+    "backToLive": "Back to live",
+    "quality": "Quality",
+    "hd": "HD",
+    "sd": "SD",
+    "stopped": "Live view is stopped.",
+    "startLive": "Start live view",
+    "opening": "Connecting to the video…",
+    "playerStarting": "Getting the player ready…",
+    "play": "Play",
+    "pause": "Pause",
+    "stop": "Stop",
+    "back10": "Back 10 seconds",
+    "forward10": "Forward 10 seconds",
+    "mute": "Mute",
+    "unmute": "Unmute",
+    "volume": "Volume",
+    "fullscreen": "Full screen",
+    "exitFullscreen": "Exit full screen",
+    "position": "Position in recording",
+    "model": "{model}",
+    "host": "Camera at {host}",
+    "retry": "Try again",
+    "externalTip": "For the smoothest playback with sound, open this recording in VLC or another video player.",
+    "openExternal": "Open in another player",
+    "screenshot": "Save a screenshot",
+    "screenshotSaved": "Screenshot saved: {name}"
+  },
+  "calendar": {
+    "title": "Recordings",
+    "previous": "Previous month",
+    "next": "Next month",
+    "hasRecordings": "Has recordings",
+    "today": "Today",
+    "loading": "Reading the SD card…",
+    "refresh": "Refresh",
+    "weekdays": [
+      "Mo",
+      "Tu",
+      "We",
+      "Th",
+      "Fr",
+      "Sa",
+      "Su"
+    ],
+    "weekStart": 1,
+    "dayLabel": "{date}",
+    "dayLabelRec": "{date}, has recordings"
+  },
+  "clips": {
+    "title": "{date}",
+    "count": "{n} recordings",
+    "countOne": "1 recording",
+    "all": "All",
+    "motion": "Motion",
+    "continuous": "Continuous",
+    "filter": "Show",
+    "loading": "Loading recordings…",
+    "empty": "No recordings on this day.",
+    "emptyHint": "Pick a day with a mark under it.",
+    "emptyFilter": "No motion recordings on this day.",
+    "play": "Play",
+    "download": "Download",
+    "downloaded": "Downloaded",
+    "queued": "Waiting",
+    "downloading": "{percent}%",
+    "failed": "Failed",
+    "retry": "Retry",
+    "length": "Length",
+    "start": "Start",
+    "end": "End",
+    "type": "Type",
+    "actions": "Actions",
+    "downloadToPlay": "Downloading this recording, then it plays.",
+    "until": "Until {time}, {length}",
+    "playClip": "Play recording from {time}",
+    "downloadClip": "Download recording from {time}"
+  },
+  "downloads": {
+    "title": "Downloads",
+    "folder": "Saved to",
+    "changeFolder": "Change folder",
+    "openFolder": "Open folder",
+    "clearFinished": "Clear finished",
+    "empty": "Nothing downloaded in this session.",
+    "emptyHint": "Choose a recording on the Camera page and select Download.",
+    "clip": "Recording",
+    "status": "Status",
+    "queued": "Waiting",
+    "downloading": "Downloading, {percent}%",
+    "done": "Saved",
+    "failed": "Failed",
+    "cancelled": "Cancelled",
+    "cancel": "Cancel",
+    "play": "Play",
+    "showFile": "Show in folder",
+    "retry": "Retry",
+    "finishedToast": "Saved {name}.",
+    "oneAtATime": "The camera sends one recording at a time, so downloads wait their turn.",
+    "playing": "Playing"
+  },
+  "problems": {
+    "title": "Problems",
+    "intro": "What went wrong, in plain words, and what to try.",
+    "empty": "No problems so far.",
+    "whatToDo": "What to try",
+    "technical": "Technical details",
+    "copy": "Copy details",
+    "copied": "Copied",
+    "openLogs": "Open log folder",
+    "clear": "Clear list",
+    "seeDetails": "See what to try",
+    "when": "{time}",
+    "code": "Code {code}"
+  },
+  "settings": {
+    "title": "Settings",
+    "language": "Language",
+    "languageHint": "To add a language, open the language folder, copy _template.json to a new name such as de.json, translate the text and restart the app.",
+    "downloads": "Downloads folder",
+    "updates": "Updates",
+    "checkOnStart": "Check for a new version when the app opens",
+    "checkNow": "Check now",
+    "checking": "Checking…",
+    "upToDate": "You have the latest version.",
+    "updateFound": "Version {version} is available.",
+    "checkFailed": "Could not reach GitHub. Try again later.",
+    "privacy": "The check asks GitHub for the latest release. It sends no camera details.",
+    "project": "Project page",
+    "pytapoPage": "pytapo on GitHub",
+    "dataFolder": "App data folder",
+    "languageFolder": "Open language folder"
+  },
+  "update": {
+    "title": "TapFeed {version} is available",
+    "body": "You have {current}. Download the new version from GitHub and replace this file.",
+    "download": "Download",
+    "later": "Later",
+    "skip": "Skip this version"
+  },
+  "common": {
+    "close": "Close",
+    "cancel": "Cancel",
+    "retry": "Try again",
+    "ok": "OK",
+    "notAvailable": "Not available"
+  },
+  "errors": {
+    "ERR_INPUT": {
+      "title": "Something is missing",
+      "explanation": "Enter the camera IP address, the Camera Account username and its password.",
+      "steps": []
+    },
+    "ERR_CLOUD_AUTH": {
+      "title": "The camera did not accept the login",
+      "explanation": "Both ways of signing in were refused. Many cameras want your Tapo app password here, not only the Camera Account password.",
+      "steps": [
+        "Tick “My Tapo app password is different” and enter the password you use in the Tapo app.",
+        "Check the Camera Account username and password in the Tapo app.",
+        "Wait a minute between tries. Too many wrong tries lock the camera for a while."
+      ]
+    },
+    "ERR_CAMERA_LOCKED": {
+      "title": "The camera is locked for a few minutes",
+      "explanation": "After several wrong passwords the camera stops accepting logins for a while.",
+      "steps": [
+        "Wait several minutes without trying again. Each try restarts the wait.",
+        "Check the passwords in the Tapo app, then connect once."
+      ]
+    },
+    "ERR_CLOUD_UNREACHABLE": {
+      "title": "The camera did not answer",
+      "explanation": "The PC could not reach the camera's control connection.",
+      "steps": [
+        "Check the IP address in the Tapo app under Device info.",
+        "Make sure this PC and the camera are on the same Wi-Fi or network.",
+        "Allow TapFeed through Windows Firewall or your antivirus."
+      ]
+    },
+    "ERR_CLOUD_UNKNOWN": {
+      "title": "The camera gave an answer the app does not understand",
+      "explanation": "This can happen with very new camera firmware or while the camera restarts.",
+      "steps": [
+        "Wait a minute and connect again.",
+        "If you have a separate Tapo app password, enter it.",
+        "If it keeps happening, copy the technical details and report it on GitHub."
+      ]
+    },
+    "ERR_CONNECT_FAILED": {
+      "title": "Could not connect to the camera",
+      "explanation": "The connection failed for a reason the app could not pin down.",
+      "steps": [
+        "Try again.",
+        "Restart the camera if it keeps failing."
+      ]
+    },
+    "ERR_BAD_HOST": {
+      "title": "That IP address does not look right",
+      "explanation": "Enter only the numbers, like 192.168.0.103, without http:// or a port.",
+      "steps": []
+    },
+    "ERR_CAMERA_TIMEOUT": {
+      "title": "The camera took too long to answer",
+      "explanation": "The camera may be busy, restarting or far from the router.",
+      "steps": [
+        "Wait a moment and try again.",
+        "Move the camera closer to the router or restart it."
+      ]
+    },
+    "ERR_CAMERA_UNREACHABLE": {
+      "title": "No camera at that address",
+      "explanation": "Nothing answered at that IP address within a few seconds.",
+      "steps": [
+        "Check the IP address in the Tapo app: camera, Settings, Device info.",
+        "Make sure the camera is on and on the same network as this PC.",
+        "Select Test beside the IP address to check again."
+      ]
+    },
+    "ERR_RTSP_AUTH": {
+      "title": "Live view login was refused",
+      "explanation": "The camera rejected the Camera Account username or password for live video.",
+      "steps": [
+        "Check the Camera Account in the Tapo app: camera, Settings, Advanced settings, Camera Account.",
+        "Sign out and sign in again with the corrected password."
+      ]
+    },
+    "ERR_RTSP_REFUSED": {
+      "title": "The camera refused live video",
+      "explanation": "The camera's video port (554) did not accept the connection.",
+      "steps": [
+        "Restart the camera.",
+        "Make sure no firewall blocks port 554."
+      ]
+    },
+    "ERR_LIVE_REJECTED": {
+      "title": "Live video did not start",
+      "explanation": "The camera did not send a video stream.",
+      "steps": [
+        "Try SD quality.",
+        "Close other apps that watch this camera, then start live view again."
+      ]
+    },
+    "ERR_PLAYBACK_OPEN": {
+      "title": "This recording could not be played",
+      "explanation": "The file is missing or damaged.",
+      "steps": [
+        "Download the recording again."
+      ]
+    },
+    "ERR_PLAYBACK": {
+      "title": "Playback stopped",
+      "explanation": "The player could not carry out that action.",
+      "steps": [
+        "Try again."
+      ]
+    },
+    "ERR_PLAYER_START": {
+      "title": "The video player could not start",
+      "explanation": "Part of the app could not be unpacked or loaded on this PC.",
+      "steps": [
+        "Close TapFeed and open it again.",
+        "Make sure your antivirus did not block or remove files in the app data folder."
+      ]
+    },
+    "ERR_PLAYER_STARTING": {
+      "title": "The player is still starting",
+      "explanation": "Give it a second and try again.",
+      "steps": []
+    },
+    "ERR_FILE_MISSING": {
+      "title": "The file is gone",
+      "explanation": "It was moved or deleted after it was downloaded.",
+      "steps": [
+        "Download the recording again."
+      ]
+    },
+    "ERR_NOT_CONNECTED": {
+      "title": "Not connected",
+      "explanation": "Sign in to the camera first.",
+      "steps": []
+    },
+    "ERR_SD_NOT_AUTHENTICATED": {
+      "title": "Not connected to the camera",
+      "explanation": "The connection to the camera's recordings was lost.",
+      "steps": [
+        "Sign out and sign in again."
+      ]
+    },
+    "ERR_NO_SD_CARD": {
+      "title": "No memory card found",
+      "explanation": "The camera has no microSD card, or it is not formatted.",
+      "steps": [
+        "Check the card in the Tapo app under Storage and recording."
+      ]
+    },
+    "ERR_SD_LOADING": {
+      "title": "The memory card is still loading",
+      "explanation": "The camera is reading its microSD card after a restart.",
+      "steps": [
+        "Wait a minute, then select Refresh."
+      ]
+    },
+    "ERR_CAMERA_BUSY": {
+      "title": "The camera is busy",
+      "explanation": "Another app or phone is already playing a recording from this camera.",
+      "steps": [
+        "Close recording playback in the Tapo app on your phone.",
+        "Try again in a minute."
+      ]
+    },
+    "ERR_SESSION_EXPIRED": {
+      "title": "The camera ended the session",
+      "explanation": "This happens after a while, or when the camera restarts.",
+      "steps": [
+        "Sign out and sign in again."
+      ]
+    },
+    "ERR_RECORDINGS_FAILED": {
+      "title": "Could not load recordings",
+      "explanation": "The camera did not send the list of recordings.",
+      "steps": [
+        "Select Refresh.",
+        "Sign out and sign in again if it keeps failing."
+      ]
+    },
+    "ERR_REFRESH_FAILED": {
+      "title": "Could not refresh",
+      "explanation": "The camera did not send the list of recording days.",
+      "steps": [
+        "Try again in a moment."
+      ]
+    },
+    "ERR_DOWNLOAD_EMPTY": {
+      "title": "The camera sent no video for this recording",
+      "explanation": "The recording may still be in progress, or it was overwritten on the card.",
+      "steps": [
+        "Wait until the recording ends, then try again.",
+        "Pick another recording."
+      ]
+    },
+    "ERR_DOWNLOAD_FAILED": {
+      "title": "The download failed",
+      "explanation": "The camera stopped sending the recording.",
+      "steps": [
+        "Select Retry."
+      ]
+    },
+    "ERR_DOWNLOAD_NETWORK": {
+      "title": "The connection dropped during the download",
+      "explanation": "The Wi-Fi link to the camera was interrupted.",
+      "steps": [
+        "Select Retry.",
+        "Move the camera closer to the router."
+      ]
+    },
+    "ERR_DISK_FULL": {
+      "title": "The disk is full",
+      "explanation": "There is no space left in the downloads folder.",
+      "steps": [
+        "Free some space, or choose another folder in Settings."
+      ]
+    },
+    "ERR_STORAGE_PERM": {
+      "title": "That folder cannot be used",
+      "explanation": "The app is not allowed to save files there.",
+      "steps": [
+        "Choose a folder you own, such as one in Documents."
+      ]
+    },
+    "ERR_CREDENTIAL_STORE": {
+      "title": "The password could not be remembered",
+      "explanation": "Windows Credential Manager refused to save it. You are still connected.",
+      "steps": [
+        "Untick “Remember on this PC”, or check Credential Manager in Windows settings."
+      ]
+    },
+    "ERR_HELPER_START": {
+      "title": "The camera connection could not start",
+      "explanation": "Part of the app could not be unpacked or was blocked on this PC.",
+      "steps": [
+        "Close TapFeed and open it again.",
+        "Check that your antivirus did not quarantine tapo-helper.exe."
+      ]
+    },
+    "ERR_HELPER_STOPPED": {
+      "title": "The camera connection stopped",
+      "explanation": "The part of the app that talks to the camera closed unexpectedly.",
+      "steps": [
+        "Sign out and sign in again."
+      ]
+    },
+    "ERR_UPDATE_CHECK": {
+      "title": "Could not check for updates",
+      "explanation": "GitHub could not be reached.",
+      "steps": [
+        "Check your internet connection and try again later."
+      ]
+    },
+    "ERR_SETTINGS": {
+      "title": "Settings could not be saved",
+      "explanation": "The settings file could not be written.",
+      "steps": [
+        "Close other copies of TapFeed and try again."
+      ]
+    },
+    "ERR_UNKNOWN": {
+      "title": "Something went wrong",
+      "explanation": "The app could not tell exactly what happened.",
+      "steps": [
+        "Try again.",
+        "If it keeps happening, copy the technical details and report it on GitHub."
+      ]
+    },
+    "ERR_SCREENSHOT": {
+      "title": "The screenshot was not saved",
+      "explanation": "The picture could not be written to the downloads folder.",
+      "steps": [
+        "Check that the downloads folder exists and has free space, in Settings."
+      ]
+    },
+    "ERR_NOTHING_PLAYING": {
+      "title": "Nothing is playing",
+      "explanation": "Start live view or play a recording, then take the screenshot.",
+      "steps": []
+    },
+    "ERR_PTZ_UNSUPPORTED": {
+      "title": "This camera cannot turn",
+      "explanation": "It has no pan and tilt motor, so movement controls are hidden.",
+      "steps": []
+    },
+    "ERR_PTZ_MOVE": {
+      "title": "The camera did not move",
+      "explanation": "It may be at the end of its range, or busy.",
+      "steps": [
+        "Try the other direction.",
+        "Wait a moment and try again."
+      ]
+    }
+  },
+  "about": {
+    "title": "About",
+    "intro": "TapFeed shows your Tapo camera live and lets you browse, play and save its memory card recordings.",
+    "thanksTitle": "Thanks",
+    "thanksUse": "Thank you for using TapFeed.",
+    "coffee": "Loved the project? Buy me a coffee please!",
+    "coffeeLink": "Buy me a coffee",
+    "bugs": "Found a bug? Open the issues page and select New issue.",
+    "bugsLink": "Report a bug",
+    "credits": "Camera connection by pytapo, by Juraj Nyíri. Video by mpv.",
+    "heading": "TapFeed (Previously named Tapo-Viewer)",
+    "palestineAlt": "Free Palestine"
+  },
+  "ptz": {
+    "title": "Move camera",
+    "left": "Turn left",
+    "right": "Turn right",
+    "up": "Tilt up",
+    "down": "Tilt down",
+    "presets": "Saved positions",
+    "edge": "The camera did not move. It may be at the end of its range."
+  }
+}

@@ -1,0 +1,43 @@
+[package]
+name = "tapfeed"
+version = "2.0.0"
+edition = "2021"
+description = "Watch a Tapo camera live and browse its SD card recordings"
+license = "MIT"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+zstd = { version = "0.13", features = ["zstdmt"] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["sync", "time"] }
+libloading = "0.8"
+zstd = "0.13"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+ureq = { version = "2", default-features = false, features = ["tls", "json"] }
+raw-window-handle = "0.6"
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_Security_Credentials",
+    "Win32_System_LibraryLoader",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+[features]
+# Embeds ui/ into the exe. The Tauri CLI normally sets this; on by default so
+# a plain `cargo build --release` produces the finished app.
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]
+
+[profile.release]
+opt-level = "s"
+lto = "thin"
+strip = true
+panic = "abort"

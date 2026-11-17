@@ -1,0 +1,352 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="TapFeed: watch your Tapo camera live and browse its memory card recordings by day.">
+<title>TapFeed</title>
+<link rel="stylesheet" href="css/app.css">
+<script type="module" src="js/app.js"></script>
+</head>
+<body data-view="boot">
+<noscript><p class="noscript">TapFeed needs scripting turned on.</p></noscript>
+
+<header class="topbar">
+  <span class="wordmark"><img src="img/logo-128.png" alt="" width="28" height="28"><span data-i18n="app.name">TapFeed</span></span>
+  <nav class="tabs" data-i18n-attr="aria-label:nav.main">
+    <a href="#login" class="tab" data-view-link="login" data-auth="out" data-i18n="nav.signIn">Sign in</a>
+    <a href="#camera" class="tab" data-view-link="camera" data-auth="in" data-i18n="nav.camera">Camera</a>
+    <a href="#downloads" class="tab" data-view-link="downloads" data-auth="in"><span data-i18n="nav.downloads">Downloads</span><span class="tab-count" id="dlCount" hidden></span></a>
+    <a href="#problems" class="tab" data-view-link="problems"><span data-i18n="nav.problems">Problems</span><span class="tab-count tab-count--alert" id="problemCount" hidden></span></a>
+    <a href="#settings" class="tab" data-view-link="settings" data-i18n="nav.settings">Settings</a>
+    <a href="#about" class="tab" data-view-link="about" data-i18n="nav.about">About</a>
+  </nav>
+  <div class="topbar-end">
+    <span class="device" id="deviceName"></span>
+    <button type="button" class="btn btn--quiet" id="btnSignOut" data-i18n="nav.signOut" hidden>Sign out</button>
+  </div>
+</header>
+
+<main id="main">
+
+  <!-- boot -->
+  <section class="view view--boot" data-view-pane="boot">
+    <p class="muted" data-i18n="app.loading">Starting…</p>
+  </section>
+
+  <!-- sign in -->
+  <section class="view view--login" data-view-pane="login" aria-labelledby="loginTitle">
+    <div class="login-wrap">
+      <form class="login" id="loginForm" novalidate>
+        <div class="login-head">
+          <h1 id="loginTitle" data-i18n="login.title">Connect your camera</h1>
+          <p class="muted" data-i18n="login.intro">Use the Camera Account you created in the Tapo app.</p>
+        </div>
+
+        <div class="field">
+          <label for="host" data-i18n="login.host">Camera IP address</label>
+          <div class="input-row">
+            <input id="host" name="host" type="text" inputmode="decimal" autocomplete="off" spellcheck="false" required aria-describedby="testResult" data-i18n-attr="placeholder:login.hostPlaceholder">
+            <button type="button" class="btn btn--outline btn--side" id="btnTest"><span class="spinner keep-motion" aria-hidden="true"></span><span data-i18n="login.test">Test</span></button>
+          </div>
+          <p class="hint test-result" id="testResult" role="status"></p>
+        </div>
+        <div class="field">
+          <label for="username" data-i18n="login.username">Camera Account username</label>
+          <input id="username" name="username" type="text" autocomplete="off" spellcheck="false" required>
+        </div>
+        <div class="field">
+          <label for="password" data-i18n="login.password">Camera Account password</label>
+          <div class="input-row">
+            <input id="password" name="password" type="password" autocomplete="off" required>
+            <button type="button" class="btn btn--quiet btn--side" data-reveal="password" data-i18n="login.show">Show</button>
+          </div>
+        </div>
+
+        <label class="check">
+          <input type="checkbox" id="cloudToggle">
+          <span data-i18n="login.cloudToggle">My Tapo app password is different</span>
+        </label>
+        <div class="field" id="cloudField" hidden>
+          <label for="cloudPassword" data-i18n="login.cloudPassword">Tapo app password</label>
+          <div class="input-row">
+            <input id="cloudPassword" name="cloudPassword" type="password" autocomplete="off">
+            <button type="button" class="btn btn--quiet btn--side" data-reveal="cloudPassword" data-i18n="login.show">Show</button>
+          </div>
+        </div>
+
+        <label class="check">
+          <input type="checkbox" id="remember">
+          <span data-i18n="login.remember">Remember on this PC</span>
+        </label>
+
+        <button type="submit" class="btn btn--primary btn--wide" id="btnConnect">
+          <span class="spinner keep-motion" aria-hidden="true"></span>
+          <span data-i18n="login.connect">Connect</span>
+        </button>
+        <p class="hint" id="connectStage" role="status"></p>
+      </form>
+
+      <aside class="login-side">
+        <div class="notice notice--error" id="loginError" role="alert" hidden>
+          <h2 class="notice-title" id="loginErrorTitle"></h2>
+          <p id="loginErrorText"></p>
+          <ol class="steps" id="loginErrorSteps"></ol>
+        </div>
+        <div class="login-help" id="loginHelp">
+          <h2 id="helpTitle" data-i18n="login.helpTitle">First time?</h2>
+          <ol class="route">
+            <li><span class="route-n">1</span><p data-i18n="login.help1"></p></li>
+            <li><span class="route-n">2</span><p data-i18n="login.help2"></p></li>
+            <li><span class="route-n">3</span><p data-i18n="login.help3"></p></li>
+            <li><span class="route-n">4</span><p data-i18n="login.help4"></p></li>
+          </ol>
+        </div>
+      </aside>
+    </div>
+  </section>
+
+  <!-- camera -->
+  <section class="view view--camera" data-view-pane="camera" aria-labelledby="playerTitle">
+    <div class="stage">
+      <div class="stage-head">
+        <h1 id="playerTitle" data-i18n="camera.liveTitle">Live view</h1>
+        <span class="plate-live" id="livePlate" hidden data-i18n="camera.live">Live</span>
+        <div class="segmented" role="radiogroup" data-i18n-attr="aria-label:camera.quality" id="quality">
+          <button type="button" role="radio" aria-checked="true" data-quality="HD" data-i18n="camera.hd">HD</button>
+          <button type="button" role="radio" aria-checked="false" data-quality="SD" data-i18n="camera.sd">SD</button>
+        </div>
+        <label class="visually-hidden" for="presetSelect" data-i18n="ptz.presets">Saved positions</label>
+        <select id="presetSelect" class="preset-select" hidden></select>
+        <button type="button" class="btn btn--outline" id="btnBackLive" hidden data-i18n="camera.backToLive">Back to live</button>
+      </div>
+      <p class="clip-tip" id="clipTip" hidden>
+        <span data-i18n="camera.externalTip">For the smoothest playback with sound, open this recording in VLC or another video player.</span>
+        <button type="button" class="btn btn--quiet" id="btnExternal" data-i18n="camera.openExternal">Open in another player</button>
+      </p>
+
+      <div class="video" id="video">
+        <div class="video-msg" id="videoMsg">
+          <p id="videoMsgText" data-i18n="camera.stopped">Live view is stopped.</p>
+          <p class="video-msg-detail" id="videoMsgDetail" hidden></p>
+          <button type="button" class="btn btn--primary" id="btnStartLive" data-i18n="camera.startLive">Start live view</button>
+        </div>
+      </div>
+
+      <div class="controls" id="controls">
+        <button type="button" class="icon-btn" id="btnPlayPause" data-i18n-attr="aria-label:camera.pause;title:camera.pause">
+          <svg class="i-pause" viewBox="0 0 20 20" width="20" height="20" aria-hidden="true"><rect x="5" y="4" width="3.5" height="12"/><rect x="11.5" y="4" width="3.5" height="12"/></svg>
+          <svg class="i-play" viewBox="0 0 20 20" width="20" height="20" aria-hidden="true"><path d="M6 4l10 6-10 6z"/></svg>
+        </button>
+        <button type="button" class="icon-btn" id="btnStop" data-i18n-attr="aria-label:camera.stop;title:camera.stop">
+          <svg viewBox="0 0 20 20" width="20" height="20" aria-hidden="true"><rect x="5" y="5" width="10" height="10"/></svg>
+        </button>
+        <button type="button" class="icon-btn clip-only" id="btnBack10" data-i18n-attr="aria-label:camera.back10;title:camera.back10">
+          <svg viewBox="0 0 20 20" width="20" height="20" aria-hidden="true"><path d="M10 5l-7 5 7 5zM17 5l-7 5 7 5z"/></svg>
+        </button>
+        <button type="button" class="icon-btn clip-only" id="btnFwd10" data-i18n-attr="aria-label:camera.forward10;title:camera.forward10">
+          <svg viewBox="0 0 20 20" width="20" height="20" aria-hidden="true"><path d="M3 5l7 5-7 5zM10 5l7 5-7 5z"/></svg>
+        </button>
+        <span class="time num" id="timeNow">0:00</span>
+        <input type="range" class="seek clip-only" id="seek" min="0" max="1000" value="0" step="1" data-i18n-attr="aria-label:camera.position">
+        <span class="time num clip-only" id="timeTotal">0:00</span>
+        <span class="controls-gap"></span>
+        <button type="button" class="icon-btn" id="btnMute" data-i18n-attr="aria-label:camera.mute;title:camera.mute">
+          <svg class="i-sound" viewBox="0 0 20 20" width="20" height="20" aria-hidden="true"><path d="M3 8h3l4-3v10l-4-3H3z"/><path d="M13 7.5a3.5 3.5 0 010 5M15 5.5a6.5 6.5 0 010 9" fill="none" stroke="currentColor" stroke-width="1.6"/></svg>
+          <svg class="i-muted" viewBox="0 0 20 20" width="20" height="20" aria-hidden="true"><path d="M3 8h3l4-3v10l-4-3H3z"/><path d="M13 8l4 4M17 8l-4 4" fill="none" stroke="currentColor" stroke-width="1.6"/></svg>
+        </button>
+        <input type="range" class="volume" id="volume" min="0" max="100" value="50" data-i18n-attr="aria-label:camera.volume">
+        <div class="ptz" id="ptz" role="group" data-i18n-attr="aria-label:ptz.title" hidden>
+          <button type="button" class="icon-btn" data-move="left" data-i18n-attr="aria-label:ptz.left;title:ptz.left">
+            <svg viewBox="0 0 20 20" width="20" height="20" aria-hidden="true"><path d="M12.5 4l-6 6 6 6" fill="none" stroke="currentColor" stroke-width="2"/></svg>
+          </button>
+          <button type="button" class="icon-btn" data-move="up" data-i18n-attr="aria-label:ptz.up;title:ptz.up">
+            <svg viewBox="0 0 20 20" width="20" height="20" aria-hidden="true"><path d="M4 12.5l6-6 6 6" fill="none" stroke="currentColor" stroke-width="2"/></svg>
+          </button>
+          <button type="button" class="icon-btn" data-move="down" data-i18n-attr="aria-label:ptz.down;title:ptz.down">
+            <svg viewBox="0 0 20 20" width="20" height="20" aria-hidden="true"><path d="M4 7.5l6 6 6-6" fill="none" stroke="currentColor" stroke-width="2"/></svg>
+          </button>
+          <button type="button" class="icon-btn" data-move="right" data-i18n-attr="aria-label:ptz.right;title:ptz.right">
+            <svg viewBox="0 0 20 20" width="20" height="20" aria-hidden="true"><path d="M7.5 4l6 6-6 6" fill="none" stroke="currentColor" stroke-width="2"/></svg>
+          </button>
+        </div>
+        <button type="button" class="icon-btn" id="btnSnapshot" data-i18n-attr="aria-label:camera.screenshot;title:camera.screenshot">
+          <svg viewBox="0 0 20 20" width="20" height="20" aria-hidden="true"><path d="M7 4l-1.5 2H3v10h14V6h-2.5L13 4z" fill="none" stroke="currentColor" stroke-width="1.6"/><circle cx="10" cy="11" r="3" fill="none" stroke="currentColor" stroke-width="1.6"/></svg>
+        </button>
+        <button type="button" class="icon-btn" id="btnFullscreen" data-i18n-attr="aria-label:camera.fullscreen;title:camera.fullscreen">
+          <svg viewBox="0 0 20 20" width="20" height="20" aria-hidden="true"><path d="M3 8V3h5M12 3h5v5M17 12v5h-5M8 17H3v-5" fill="none" stroke="currentColor" stroke-width="1.8"/></svg>
+        </button>
+      </div>
+    </div>
+
+    <div class="side">
+      <section class="calendar" aria-labelledby="calTitle">
+        <div class="panel-head">
+          <h2 id="calTitle"><span data-i18n="calendar.title">Recordings</span></h2>
+          <p class="legend"><span class="legend-mark" aria-hidden="true"></span><span data-i18n="calendar.hasRecordings">Has recordings</span></p>
+          <button type="button" class="btn btn--quiet" id="btnRefresh" data-i18n="calendar.refresh">Refresh</button>
+        </div>
+        <div class="month">
+          <button type="button" class="icon-btn" id="btnPrevMonth" data-i18n-attr="aria-label:calendar.previous;title:calendar.previous">
+            <svg viewBox="0 0 20 20" width="20" height="20" aria-hidden="true"><path d="M12.5 4l-6 6 6 6" fill="none" stroke="currentColor" stroke-width="2"/></svg>
+          </button>
+          <p class="month-name" id="monthName" aria-live="polite"></p>
+          <button type="button" class="icon-btn" id="btnNextMonth" data-i18n-attr="aria-label:calendar.next;title:calendar.next">
+            <svg viewBox="0 0 20 20" width="20" height="20" aria-hidden="true"><path d="M7.5 4l6 6-6 6" fill="none" stroke="currentColor" stroke-width="2"/></svg>
+          </button>
+        </div>
+        <div class="weekdays" id="weekdays" aria-hidden="true"></div>
+        <div class="days" id="days" role="grid"></div>
+        <p class="panel-state" id="calState" hidden></p>
+      </section>
+
+      <section class="clips" aria-labelledby="clipsTitle">
+        <div class="panel-head">
+          <h2 id="clipsTitle"></h2>
+          <div class="segmented segmented--small" role="radiogroup" data-i18n-attr="aria-label:clips.filter" id="clipFilter">
+            <button type="button" role="radio" aria-checked="true" data-filter="all" data-i18n="clips.all">All</button>
+            <button type="button" role="radio" aria-checked="false" data-filter="motion" data-i18n="clips.motion">Motion</button>
+          </div>
+        </div>
+        <p class="clips-count muted" id="clipsCount"></p>
+        <ul class="board" id="clipList"></ul>
+        <div class="panel-state" id="clipsState" hidden>
+          <p id="clipsStateText"></p>
+          <p class="hint" id="clipsStateHint"></p>
+          <button type="button" class="btn btn--outline" id="btnClipsRetry" hidden data-i18n="common.retry">Try again</button>
+        </div>
+      </section>
+    </div>
+  </section>
+
+  <!-- downloads -->
+  <section class="view view--page" data-view-pane="downloads" aria-labelledby="dlTitle">
+    <div class="page">
+      <div class="page-head">
+        <h1 id="dlTitle" data-i18n="downloads.title">Downloads</h1>
+        <button type="button" class="btn btn--outline" id="btnClearFinished" data-i18n="downloads.clearFinished">Clear finished</button>
+      </div>
+      <div class="folder-row">
+        <p><span class="muted" data-i18n="downloads.folder">Saved to</span> <span class="path" id="dlFolder"></span></p>
+        <button type="button" class="btn btn--quiet" id="btnOpenFolder" data-i18n="downloads.openFolder">Open folder</button>
+        <button type="button" class="btn btn--quiet" id="btnChangeFolder" data-i18n="downloads.changeFolder">Change folder</button>
+      </div>
+      <p class="hint" data-i18n="downloads.oneAtATime"></p>
+      <table class="table" id="dlTable" hidden>
+        <thead><tr><th scope="col" data-i18n="downloads.clip">Recording</th><th scope="col" data-i18n="downloads.status">Status</th><th scope="col"><span class="visually-hidden" data-i18n="clips.actions">Actions</span></th></tr></thead>
+        <tbody id="dlRows"></tbody>
+      </table>
+      <div class="empty" id="dlEmpty">
+        <p data-i18n="downloads.empty">Nothing downloaded in this session.</p>
+        <p class="hint" data-i18n="downloads.emptyHint"></p>
+      </div>
+    </div>
+  </section>
+
+  <!-- problems -->
+  <section class="view view--page" data-view-pane="problems" aria-labelledby="pTitle">
+    <div class="page">
+      <div class="page-head">
+        <h1 id="pTitle" data-i18n="problems.title">Problems</h1>
+        <button type="button" class="btn btn--quiet" id="btnOpenLogs" data-i18n="problems.openLogs">Open log folder</button>
+        <button type="button" class="btn btn--outline" id="btnClearProblems" data-i18n="problems.clear">Clear list</button>
+      </div>
+      <p class="muted" data-i18n="problems.intro"></p>
+      <ol class="problems" id="problemList"></ol>
+      <div class="empty" id="problemsEmpty"><p data-i18n="problems.empty">No problems so far.</p></div>
+    </div>
+  </section>
+
+  <!-- settings -->
+  <section class="view view--page" data-view-pane="settings" aria-labelledby="sTitle">
+    <div class="page page--narrow">
+      <h1 id="sTitle" data-i18n="settings.title">Settings</h1>
+
+      <section class="setting" aria-labelledby="sLang">
+        <h2 id="sLang"><label for="language" data-i18n="settings.language">Language</label></h2>
+        <select id="language"></select>
+        <p class="hint" data-i18n="settings.languageHint"></p>
+        <div class="row">
+          <button type="button" class="btn btn--quiet" id="btnLocales" data-i18n="settings.languageFolder">Open language folder</button>
+        </div>
+      </section>
+
+      <section class="setting" aria-labelledby="sDl">
+        <h2 id="sDl" data-i18n="settings.downloads">Downloads folder</h2>
+        <p class="path" id="sFolder"></p>
+        <div class="row">
+          <button type="button" class="btn btn--outline" id="btnChangeFolder2" data-i18n="downloads.changeFolder">Change folder</button>
+          <button type="button" class="btn btn--quiet" id="btnOpenFolder2" data-i18n="downloads.openFolder">Open folder</button>
+        </div>
+      </section>
+
+      <section class="setting" aria-labelledby="sUp">
+        <h2 id="sUp" data-i18n="settings.updates">Updates</h2>
+        <label class="check">
+          <input type="checkbox" id="checkUpdates">
+          <span data-i18n="settings.checkOnStart">Check for a new version when the app opens</span>
+        </label>
+        <div class="row">
+          <button type="button" class="btn btn--outline" id="btnCheckNow"><span class="spinner keep-motion" aria-hidden="true"></span><span data-i18n="settings.checkNow">Check now</span></button>
+          <p id="updateStatus" role="status"></p>
+        </div>
+        <p class="hint" data-i18n="settings.privacy"></p>
+      </section>
+
+    </div>
+  </section>
+
+  <!-- about -->
+  <section class="view view--page" data-view-pane="about" aria-labelledby="aTitle">
+    <div class="page page--narrow">
+      <h1 id="aTitle" data-i18n="about.heading">TapFeed (Previously named Tapo-Viewer)</h1>
+      <p data-i18n="about.intro"></p>
+      <dl class="facts">
+        <dt data-i18n="app.name">TapFeed</dt><dd class="num" id="vApp"></dd>
+        <dt>pytapo</dt><dd class="num" id="vPytapo"></dd>
+        <dt>libmpv</dt><dd class="num" id="vMpv"></dd>
+      </dl>
+
+      <section class="setting" aria-labelledby="thanksTitle">
+        <h2 id="thanksTitle" data-i18n="about.thanksTitle">Thanks</h2>
+        <p data-i18n="about.thanksUse"></p>
+        <div class="thanks-line">
+          <p data-i18n="about.coffee">Loved the project? Buy me a coffee please!</p>
+          <button type="button" class="btn btn--primary" data-link="https://shahoriar.bd/thanks" data-i18n="about.coffeeLink">Buy me a coffee</button>
+        </div>
+        <div class="thanks-line">
+          <p data-i18n="about.bugs"></p>
+          <button type="button" class="btn btn--outline" data-link="https://github.com/zaifears/TapFeed/issues" data-i18n="about.bugsLink">Report a bug</button>
+        </div>
+        <p class="muted" data-i18n="about.credits"></p>
+      </section>
+
+      <div class="row">
+        <button type="button" class="btn btn--quiet" data-link="https://github.com/zaifears/TapFeed" data-i18n="settings.project">Project page</button>
+        <button type="button" class="btn btn--quiet" data-link="https://github.com/JurajNyiri/pytapo" data-i18n="settings.pytapoPage">pytapo on GitHub</button>
+        <button type="button" class="btn btn--quiet" id="btnDataFolder" data-i18n="settings.dataFolder">App data folder</button>
+      </div>
+
+      <figure class="solidarity">
+        <img src="img/free-palestine.png" width="720" height="376" data-i18n-attr="alt:about.palestineAlt" alt="Free Palestine">
+      </figure>
+    </div>
+  </section>
+</main>
+
+<dialog class="dialog" id="updateDialog" aria-labelledby="updTitle">
+  <h2 id="updTitle"></h2>
+  <p id="updName" class="muted"></p>
+  <p id="updBody"></p>
+  <div class="dialog-actions">
+    <button type="button" class="btn btn--primary" id="btnUpdDownload" data-i18n="update.download">Download</button>
+    <button type="button" class="btn btn--outline" id="btnUpdLater" data-i18n="update.later">Later</button>
+    <button type="button" class="btn btn--quiet" id="btnUpdSkip" data-i18n="update.skip">Skip this version</button>
+  </div>
+</dialog>
+
+<div class="toasts" id="toasts" role="status" aria-live="polite"></div>
+
+<template id="tplDay"><button type="button" class="day" role="gridcell"></button></template>
+</body>
+</html>
