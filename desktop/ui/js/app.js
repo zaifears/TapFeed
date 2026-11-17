@@ -800,24 +800,78 @@ function setClipsState(text, hint, isError) {
 }
 $("btnClipsRetry").addEventListener("click", loadClips);
 
-document.querySelectorAll("#clipFilter [data-filter]").forEach((b) =>
-  b.addEventListener("click", () => {
-    state.filter = b.dataset.filter;
-    document.querySelectorAll("#clipFilter [data-filter]").forEach((x) => x.setAttribute("aria-checked", String(x === b)));
-    renderClips();
-  }),
-);
+state.newestFirst = localStorage.getItem("clipsNewestFirst") !== "false";
+$("btnSort").addEventListener("click", () => {
+  state.newestFirst = !state.newestFirst;
+  localStorage.setItem("clipsNewestFirst", String(state.newestFirst));
+  renderClips();
+});
 
 function clipDownload(c) {
   return state.downloads.filter((d) => d.key === c.key).pop() || null;
 }
 
+const PAW = '<circle cx="5" cy="8" r="2"/><circle cx="9" cy="5" r="2"/><circle cx="13" cy="5" r="2"/><circle cx="16" cy="9" r="2"/><path d="M10.5 9c-3 0-5.5 4.5-5.5 6.5C5 17 6.5 17.5 8 17s1.5-.5 2.5-.5 1.5.5 2.5.5 3-.5 3-2c0-2-2.5-6-5.5-6z"/>';
+const ICONS = {
+  2: '<circle cx="12.5" cy="3.5" r="2"/><path d="M6 9l3-2.5h3.5l2 3 2.5.5M11.5 6.5L9.5 12l-4 1.5-2 3.5M9.5 12l3 2.5-.5 4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>',
+  6: '<circle cx="10" cy="5" r="3"/><path d="M4 18c0-4 2.6-7 6-7s6 3 6 7z"/>',
+  8: '<path d="M5.5 5h9l2 5H18a1 1 0 011 1v4h-2a2 2 0 01-4 0H7a2 2 0 01-4 0H1v-4a1 1 0 011-1h1.5zm1.3 2l-1 3h8.4l-1-3z"/>',
+  9: PAW,
+  33: PAW,
+};
+const OTHER_ICON = '<circle cx="10" cy="10" r="4"/>';
+const DOWNLOAD_ICON = '<path d="M9 3h2v8l3-3 1.4 1.4L10 14.8 4.6 9.4 6 8l3 3zM4 16h12v2H4z"/>';
+const CHECK_ICON = '<path d="M8 13.2l-3.6-3.6L3 11l5 5 9-9-1.4-1.4z"/>';
+const svg = (paths) => {
+  const s = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  s.setAttribute("viewBox", "0 0 20 20");
+  s.setAttribute("aria-hidden", "true");
+  s.innerHTML = paths;
+  return s;
+};
+
+function typeName(n) {
+  const name = t(`clips.types.${n}`);
+  return name === `clips.types.${n}` ? t("clips.detection") : name;
+}
+
+const clipTypes = (c) => (c.types || []).filter((n) => n !== 1);
+
 function clipKind(c) {
-  if (!c.types?.length) return t(c.motion ? "clips.motion" : "clips.continuous");
-  return c.types.map((n) => {
-    const name = t(`clips.types.${n}`);
-    return name === `clips.types.${n}` ? t("clips.detection") : name;
-  }).filter((v, i, all) => all.indexOf(v) === i).join(", ");
+  const types = clipTypes(c);
+  if (!types.length) return t(c.motion ? "clips.motion" : "clips.continuous");
+  return [...new Set(types.map(typeName))].join(", ");
+}
+
+// Motion is left out: every detection has it.
+function renderFilter() {
+  const counts = new Map();
+  for (const c of state.clips) for (const n of new Set(clipTypes(c))) counts.set(n, (counts.get(n) || 0) + 1);
+  counts.delete(2);
+  const typed = state.clips.some((c) => clipTypes(c).length);
+  const options = [["all", t("clips.all")]];
+  for (const [n, count] of [...counts].sort((a, b) => a[0] - b[0])) options.push([String(n), `${typeName(n)} ${count}`]);
+  // Cameras without a detection list.
+  if (!typed && state.clips.some((c) => c.motion) && state.clips.some((c) => !c.motion)) options.push(["motion", t("clips.motion")]);
+  if (!options.some(([v]) => v === state.filter)) state.filter = "all";
+  $("clipFilter").replaceChildren(...options.map(([value, label]) => {
+    const b = el("button", null, label);
+    b.type = "button";
+    b.setAttribute("role", "radio");
+    b.setAttribute("aria-checked", String(value === state.filter));
+    b.addEventListener("click", () => {
+      state.filter = value;
+      renderClips();
+    });
+    return b;
+  }));
+  $("clipFilter").hidden = options.length < 2;
+}
+
+function clipShown(c) {
+  if (state.filter === "all") return true;
+  if (state.filter === "motion") return c.motion;
+  return clipTypes(c).includes(Number(state.filter));
 }
 
 // ---------------------------------------------------------------- thumbnails
@@ -846,7 +900,7 @@ async function loadThumbs() {
       // Missing key: camera busy, asked again on the next render.
       if (!(s in got)) continue;
       state.thumbs.set(s, got[s]);
-      document.querySelectorAll(`img.clip-thumb[data-start="${s}"]`).forEach((img) => {
+      document.querySelectorAll(`img.clip-img[data-start="${s}"]`).forEach((img) => {
         if (got[s]) img.src = got[s];
       });
     }
@@ -859,23 +913,43 @@ async function loadThumbs() {
   loadThumbs();
 }
 
-function clipThumb(c) {
+function clipThumb(c, dl) {
+  const box = el("span", "clip-thumb");
   // The camera keeps an image only for detection recordings.
-  if (!c.motion) return el("span", "clip-thumb");
-  const img = el("img", "clip-thumb");
-  img.alt = "";
-  img.dataset.start = c.start;
-  const url = state.thumbs.get(c.start);
-  if (url) img.src = url;
-  else if (url === undefined) thumbObserver.observe(img);
-  img.addEventListener("click", () => playClip(c));
-  return img;
+  if (c.motion) {
+    const img = el("img", "clip-img");
+    img.alt = "";
+    img.dataset.start = c.start;
+    const url = state.thumbs.get(c.start);
+    if (url) img.src = url;
+    else if (url === undefined) thumbObserver.observe(img);
+    box.append(img);
+  }
+  box.append(el("span", "clip-len num", fmtLen(c.end - c.start)));
+  if (c.file) {
+    const done = el("span", "clip-done");
+    done.title = t("clips.downloaded");
+    done.append(svg(CHECK_ICON));
+    box.append(done);
+  } else if (dl && (dl.state === "queued" || dl.state === "downloading")) {
+    const bar = el("span", "clip-progress");
+    bar.style.setProperty("--p", String(dl.progress || 0));
+    box.append(bar);
+  }
+  return box;
 }
 
 function renderClips() {
   thumbObserver.disconnect();
+  renderFilter();
+  const sort = $("btnSort");
+  sort.setAttribute("aria-pressed", String(state.newestFirst));
+  sort.classList.toggle("is-reversed", !state.newestFirst);
+  sort.title = t(state.newestFirst ? "clips.newestFirst" : "clips.oldestFirst");
+
   const list = $("clipList");
-  const shown = state.clips.filter((c) => state.filter === "all" || c.motion);
+  const shown = state.clips.filter(clipShown);
+  if (state.newestFirst) shown.reverse();
   const n = state.clips.length;
   $("clipsCount").textContent = n ? (n === 1 ? t("clips.countOne") : t("clips.count", { n })) : "";
   if (!n) setClipsState(t("clips.empty"), t("clips.emptyHint"));
@@ -886,40 +960,45 @@ function renderClips() {
   list.replaceChildren(
     ...shown.map((c) => {
       const li = el("li", "clip");
-      if (current && (c.file || clipDownload(c)?.path) === current) li.classList.add("is-current");
+      const dl = clipDownload(c);
+      if (current && (c.file || dl?.path) === current) li.classList.add("is-current");
       const start = fmtClock(c.start);
-      li.append(clipThumb(c), el("span", "clip-time", start));
+      const length = fmtLen(c.end - c.start);
 
-      const meta = el("div", "clip-meta");
-      meta.append(
-        el("span", `kind${c.motion ? " kind--motion" : ""}`, clipKind(c)),
-        el("span", "num", t("clips.until", { time: fmtClock(c.end), length: fmtLen(c.end - c.start) })),
-      );
-      li.append(meta);
+      const main = el("button", "clip-main");
+      main.type = "button";
+      main.title = t("clips.until", { time: fmtClock(c.end), length });
+      main.setAttribute("aria-label", `${t("clips.playClip", { time: start })}, ${clipKind(c)}, ${length}`);
+      main.addEventListener("click", () => playClip(c));
+      const icons = el("span", "clip-icons");
+      const types = clipTypes(c);
+      for (const n of types) {
+        const i = el("span", n === 2 ? "clip-icon clip-icon--motion" : "clip-icon");
+        i.title = typeName(n);
+        i.append(svg(ICONS[n] || OTHER_ICON));
+        icons.append(i);
+      }
+      if (!types.length) icons.append(el("span", "clip-kind", clipKind(c)));
+      const info = el("span", "clip-info");
+      info.append(el("span", "clip-time", start), icons);
+      main.append(clipThumb(c, dl), info);
 
       const actions = el("div", "clip-actions");
-      const dl = clipDownload(c);
       const busy = dl && (dl.state === "queued" || dl.state === "downloading");
       if (busy) {
         actions.append(el("span", "clip-state num", dl.state === "queued" ? t("clips.queued") : t("clips.downloading", { percent: Math.round(dl.progress * 100) })));
-      } else if (dl && dl.state === "failed") {
-        actions.append(el("span", "clip-state clip-state--failed", t("clips.failed")));
-      } else if (c.file) {
-        actions.append(el("span", "clip-state clip-state--done", t("clips.downloaded")));
-      }
-      const play = el("button", "btn btn--outline", t("clips.play"));
-      play.type = "button";
-      play.setAttribute("aria-label", t("clips.playClip", { time: start }));
-      play.addEventListener("click", () => playClip(c));
-      actions.append(play);
-      if (!c.file && !busy) {
-        const get = el("button", "btn btn--quiet", t(dl && dl.state === "failed" ? "clips.retry" : "clips.download"));
+      } else if (!c.file) {
+        const failed = dl && dl.state === "failed";
+        const get = el("button", `icon-btn${failed ? " icon-btn--failed" : ""}`);
         get.type = "button";
-        get.setAttribute("aria-label", t("clips.downloadClip", { time: start }));
+        const label = failed ? `${t("clips.failed")}, ${t("clips.retry")}` : t("clips.downloadClip", { time: start });
+        get.setAttribute("aria-label", label);
+        get.title = failed ? label : t("clips.download");
+        get.append(svg(DOWNLOAD_ICON));
         get.addEventListener("click", () => queueDownload(c));
         actions.append(get);
       }
-      li.append(actions);
+      li.append(main, actions);
       return li;
     }),
   );

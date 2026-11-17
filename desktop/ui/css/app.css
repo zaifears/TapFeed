@@ -359,27 +359,57 @@ input[type="range"]:disabled { opacity: 0.55; cursor: not-allowed; }
 .clips h2 { white-space: nowrap; }
 .clips-count { font-size: var(--text-sm); }
 .board { list-style: none; margin: 0; padding: 0; overflow-y: auto; min-height: 0; border-top: var(--rule-bar) solid var(--color-ink-rule); }
+.clips-bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--space-2xs); }
+.clips-bar .segmented { flex-wrap: wrap; }
+.sort-btn svg { transition: transform var(--dur-micro); }
+.sort-btn.is-reversed svg { transform: scaleY(-1); }
 .clip {
   display: grid;
-  grid-template-columns: 5.5rem 6.25rem minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-2xs);
+  padding: var(--space-2xs);
+  border-bottom: var(--rule-hair) solid var(--color-rule);
+  border-left: var(--rule-bar) solid transparent;
+}
+.clip.is-current { background: var(--color-paper-3); border-left-color: var(--color-accent); }
+.clip-main {
+  display: grid;
+  grid-template-columns: 8rem minmax(0, 1fr);
   align-items: center;
   gap: var(--space-sm);
-  padding: var(--space-xs) var(--space-2xs);
-  border-bottom: var(--rule-hair) solid var(--color-rule);
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  min-width: 0;
 }
-.clip.is-current { background: var(--color-paper-3); }
-.clip-thumb { display: block; width: 5.5rem; aspect-ratio: 16 / 9; object-fit: cover; background: var(--color-paper-2); }
-img.clip-thumb { cursor: pointer; }
+.clip-main:hover .clip-time { text-decoration: underline; }
+.clip-main:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 2px; }
+.clip-thumb { position: relative; display: block; width: 8rem; aspect-ratio: 16 / 9; background: var(--color-paper-2); overflow: hidden; }
+.clip-img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.clip-img:not([src]) { visibility: hidden; }
+.clip-len { position: absolute; right: 3px; bottom: 3px; padding: 0 4px; font-size: var(--text-xs); color: #fff; background: rgb(0 0 0 / 0.6); }
+.clip-done { position: absolute; left: 3px; top: 3px; display: grid; place-items: center; width: 18px; height: 18px; background: var(--color-success); color: #fff; }
+.clip-done svg { width: 14px; height: 14px; fill: currentColor; }
+.clip-progress { position: absolute; left: 0; bottom: 0; height: 3px; width: calc(var(--p, 0) * 100%); background: var(--color-accent); }
+.clip-info { display: grid; gap: var(--space-2xs); min-width: 0; }
 .clip-time { font: 800 var(--text-lg)/1 var(--font-figure); color: var(--color-accent-2); font-variant-numeric: tabular-nums; }
-.clip-meta { display: grid; gap: var(--space-3xs); font-size: var(--text-xs); color: var(--color-muted); min-width: 0; }
-.clip-meta .kind { color: var(--color-ink-2); font-weight: 600; }
-.clip-meta .kind--motion { color: var(--color-ink); }
+.clip-icons { display: flex; flex-wrap: wrap; gap: var(--space-3xs); align-items: center; }
+.clip-icon { display: grid; place-items: center; color: var(--color-ink); }
+.clip-icon svg { width: 18px; height: 18px; fill: currentColor; }
+.clip-icon--motion { color: var(--color-accent-2); }
+.clip-kind { font-size: var(--text-xs); color: var(--color-muted); }
 .clip-actions { display: flex; gap: var(--space-2xs); align-items: center; }
-.clip-actions .btn { min-height: 32px; padding: 0 var(--space-sm); font-size: var(--text-xs); }
+.clip-actions .icon-btn svg { width: 20px; height: 20px; }
+.icon-btn--failed { color: var(--color-error); }
 .clip-state { font-size: var(--text-xs); color: var(--color-ink-2); font-variant-numeric: tabular-nums; min-width: 3.5em; text-align: right; }
 .clip-state--done { color: var(--color-success); }
 .clip-state--failed { color: var(--color-error); }
-.skeleton { height: 52px; border-bottom: var(--rule-hair) solid var(--color-rule); background: var(--color-paper-2); }
+.skeleton { height: 82px; border-bottom: var(--rule-hair) solid var(--color-rule); background: var(--color-paper-2); }
 
 /* ---------- pages ---------- */
 .view--page { overflow-y: auto; align-content: start; }
