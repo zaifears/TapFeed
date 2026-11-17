@@ -563,7 +563,7 @@ $("video").addEventListener("dblclick", () => setFullscreen(!document.body.class
 
 function playingClip(st) {
   if (st.mode !== "clip" || !st.path) return null;
-  return state.clips.find((x) => x.file === st.path) || state.downloads.find((d) => d.path === st.path) || null;
+  return state.clips.find((x) => x.file === st.path || x.cache === st.path) || state.downloads.find((d) => d.path === st.path) || null;
 }
 
 // A growing file has no final length yet.
@@ -572,10 +572,16 @@ function clipLength(st) {
   return c ? c.end - c.start : st.duration || 0;
 }
 
+let playingPath = null;
 function renderPlayer(st) {
   const controls = $("controls");
   const live = st.mode === "live";
   const clip = st.mode === "clip";
+  const path = clip ? st.path : null;
+  if (path !== playingPath) {
+    playingPath = path;
+    if (state.view === "camera") renderClips();
+  }
   controls.classList.toggle("is-clip", clip);
   controls.classList.toggle("is-paused", !!st.paused || st.mode === "none");
   controls.classList.toggle("is-muted", !!st.muted);
@@ -807,8 +813,15 @@ $("btnSort").addEventListener("click", () => {
   renderClips();
 });
 
-function clipDownload(c) {
-  return state.downloads.filter((d) => d.key === c.key).pop() || null;
+const isActive = (d) => d.state === "queued" || d.state === "downloading";
+const saves = () => state.downloads.filter((d) => d.kind === "save");
+
+function clipSave(c) {
+  return saves().filter((d) => d.key === c.key).pop() || null;
+}
+
+function clipJob(c) {
+  return state.downloads.find((d) => d.key === c.key && isActive(d)) || null;
 }
 
 const PAW = '<circle cx="5" cy="8" r="2"/><circle cx="9" cy="5" r="2"/><circle cx="13" cy="5" r="2"/><circle cx="16" cy="9" r="2"/><path d="M10.5 9c-3 0-5.5 4.5-5.5 6.5C5 17 6.5 17.5 8 17s1.5-.5 2.5-.5 1.5.5 2.5.5 3-.5 3-2c0-2-2.5-6-5.5-6z"/>';
@@ -931,7 +944,7 @@ function clipThumb(c, dl) {
     done.title = t("clips.downloaded");
     done.append(svg(CHECK_ICON));
     box.append(done);
-  } else if (dl && (dl.state === "queued" || dl.state === "downloading")) {
+  } else if (dl) {
     const bar = el("span", "clip-progress");
     bar.style.setProperty("--p", String(dl.progress || 0));
     box.append(bar);
@@ -960,8 +973,9 @@ function renderClips() {
   list.replaceChildren(
     ...shown.map((c) => {
       const li = el("li", "clip");
-      const dl = clipDownload(c);
-      if (current && (c.file || dl?.path) === current) li.classList.add("is-current");
+      const dl = clipSave(c);
+      const job = clipJob(c);
+      if (current && [c.file, c.cache, job?.path].includes(current)) li.classList.add("is-current");
       const start = fmtClock(c.start);
       const length = fmtLen(c.end - c.start);
 
@@ -981,10 +995,10 @@ function renderClips() {
       if (!types.length) icons.append(el("span", "clip-kind", clipKind(c)));
       const info = el("span", "clip-info");
       info.append(el("span", "clip-time", start), icons);
-      main.append(clipThumb(c, dl), info);
+      main.append(clipThumb(c, job), info);
 
       const actions = el("div", "clip-actions");
-      const busy = dl && (dl.state === "queued" || dl.state === "downloading");
+      const busy = dl && isActive(dl);
       if (busy) {
         actions.append(el("span", "clip-state num", dl.state === "queued" ? t("clips.queued") : t("clips.downloading", { percent: Math.round(dl.progress * 100) })));
       } else if (!c.file) {
@@ -1004,9 +1018,9 @@ function renderClips() {
   );
 }
 
-async function queueDownload(c, first = false) {
+async function queueDownload(c) {
   try {
-    await invoke("queue_download", { start: c.start, end: c.end, first });
+    await invoke("queue_download", { start: c.start, end: c.end });
   } catch (e) {
     const err = asError(e);
     addProblem(err.code, err.message, "download");
@@ -1015,47 +1029,56 @@ async function queueDownload(c, first = false) {
 }
 
 async function playClip(c) {
-  if (c.file) {
-    try {
+  try {
+    if (c.file) {
       await invoke("play_file", { path: c.file });
-    } catch (e) {
-      const err = asError(e);
-      addProblem(err.code, err.message, "playback");
-      toast(errorText(err.code).title, "error");
+      return;
     }
-    return;
+    const v = await invoke("view_clip", { start: c.start, end: c.end });
+    if (v.ready) {
+      c.cache = v.path;
+      await invoke("play_file", { path: v.path });
+    } else {
+      state.pendingPlay = c.key;
+      toast(t("clips.downloadToPlay"));
+    }
+  } catch (e) {
+    const err = asError(e);
+    addProblem(err.code, err.message, "playback");
+    toast(errorText(err.code).title, "error");
   }
-  state.pendingPlay = c.key;
-  toast(t("clips.downloadToPlay"));
-  queueDownload(c, true);
 }
 
 // ---------------------------------------------------------------- downloads
 function onDownloads(list) {
-  const before = new Map(state.downloads.map((d) => [d.key, d.state]));
+  const id = (d) => `${d.kind}:${d.key}`;
+  const before = new Map(state.downloads.map((d) => [id(d), d.state]));
   state.downloads = list;
   for (const d of list) {
-    if (state.pendingPlay === d.key && d.state === "downloading" && d.progress > 0) {
+    const watched = state.pendingPlay === d.key && d.kind === "view";
+    if (watched && d.state === "downloading" && d.progress > 0) {
       state.pendingPlay = null;
       invoke("play_file", { path: d.path, growing: true }).catch(() => {});
     }
-    const was = before.get(d.key);
+    const was = before.get(id(d));
     if (was === d.state) continue;
     if (d.state === "done" && was) {
-      toast(t("downloads.finishedToast", { name: fileName(d.path) }));
       const c = state.clips.find((x) => x.key === d.key);
-      if (c) c.file = d.path;
-      if (state.pendingPlay === d.key) {
+      if (d.kind === "save") {
+        toast(t("downloads.finishedToast", { name: fileName(d.path) }));
+        if (c) c.file = d.path;
+      } else if (c) c.cache = d.path;
+      if (watched) {
         state.pendingPlay = null;
         invoke("play_file", { path: d.path }).catch(() => {});
       }
     } else if (d.state === "failed" && was) {
       addProblem(d.error?.code || "ERR_DOWNLOAD_FAILED", d.error?.message, "download");
       toast(errorText(d.error?.code || "ERR_DOWNLOAD_FAILED").title, "error");
-      if (state.pendingPlay === d.key) state.pendingPlay = null;
+      if (watched) state.pendingPlay = null;
     }
   }
-  const active = list.filter((d) => d.state === "queued" || d.state === "downloading").length;
+  const active = saves().filter(isActive).length;
   $("dlCount").hidden = active === 0;
   $("dlCount").textContent = active;
   if (state.view === "camera") renderClips();
@@ -1067,7 +1090,7 @@ async function renderDownloads() {
   const folder = await invoke("output_dir").catch(() => "");
   $("dlFolder").textContent = folder;
   const rows = $("dlRows");
-  const list = state.downloads.slice().reverse();
+  const list = saves().reverse();
   $("dlTable").hidden = list.length === 0;
   $("dlEmpty").hidden = list.length > 0;
   $("btnClearFinished").disabled = !list.some((d) => !["queued", "downloading"].includes(d.state));
@@ -1171,7 +1194,20 @@ async function renderSettings() {
   sel.value = languageCode();
   $("sFolder").textContent = await invoke("output_dir").catch(() => "");
   $("checkUpdates").checked = cfg.check_updates !== false;
+  renderCacheSize(await invoke("cache_size").catch(() => 0));
 }
+
+function renderCacheSize(bytes) {
+  const mb = new Intl.NumberFormat(intlLocale(), { style: "unit", unit: "megabyte", maximumFractionDigits: 0 });
+  $("cacheSize").textContent = t("settings.cacheUsed", { size: mb.format(bytes / 1048576) });
+}
+
+$("btnClearCache").addEventListener("click", async () => {
+  renderCacheSize(await invoke("clear_cache").catch(() => 0));
+  state.thumbs.clear();
+  state.clips.forEach((c) => (c.cache = null));
+  if (state.connected) renderClips();
+});
 
 async function renderAbout() {
   const info = await invoke("app_info").catch(() => ({}));

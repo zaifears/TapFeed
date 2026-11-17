@@ -130,19 +130,80 @@ pub fn helper_exe() -> Result<PathBuf, String> {
 }
 
 /// Remove unpacked parts left by older versions.
-pub fn thumbs_dir() -> PathBuf {
-    data_dir().join("thumbs")
+/// `cache\<camera>\clips` and `cache\<camera>\thumbs`.
+pub fn cache_dir() -> PathBuf {
+    data_dir().join("cache")
+}
+
+pub fn camera_cache_dir(host: &str) -> PathBuf {
+    cache_dir().join(host)
+}
+
+fn cached_files(sub: &str) -> Vec<std::fs::DirEntry> {
+    let Ok(cameras) = std::fs::read_dir(cache_dir()) else { return Vec::new() };
+    cameras.flatten().filter_map(|c| std::fs::read_dir(c.path().join(sub)).ok()).flatten().flatten().collect()
 }
 
 /// The SD card has overwritten such recordings long before.
 pub fn prune_old_thumbs() {
     let max_age = std::time::Duration::from_secs(60 * 24 * 60 * 60);
-    let Ok(cameras) = std::fs::read_dir(thumbs_dir()) else { return };
-    for file in cameras.flatten().filter_map(|c| std::fs::read_dir(c.path()).ok()).flatten().flatten() {
+    for file in cached_files("thumbs") {
         let old = file.metadata().and_then(|m| m.modified()).ok()
             .and_then(|t| t.elapsed().ok()).is_some_and(|age| age > max_age);
         if old {
             let _ = std::fs::remove_file(file.path());
+        }
+    }
+}
+
+/// Delete least recently watched clips until the rest fit in `limit` bytes.
+/// `at_start`: unfinished ones (.part) too, as nothing is downloading yet.
+pub fn trim_cache(limit: u64, at_start: bool) {
+    let mut clips = Vec::new();
+    let mut total = 0;
+    for f in cached_files("clips") {
+        let path = f.path();
+        let marker = path.extension().is_some_and(|x| x == "part");
+        let unfinished = marker || path.with_extension("mkv.part").exists();
+        if at_start && unfinished {
+            let _ = std::fs::remove_file(&path);
+            continue;
+        }
+        let Ok(meta) = f.metadata() else { continue };
+        total += meta.len();
+        if !unfinished {
+            clips.push((meta.modified().unwrap_or(std::time::UNIX_EPOCH), meta.len(), path));
+        }
+    }
+    clips.sort();
+    for (_, len, path) in clips {
+        if total <= limit {
+            break;
+        }
+        if std::fs::remove_file(&path).is_ok() {
+            total -= len;
+        }
+    }
+}
+
+pub fn dir_size(dir: &Path) -> u64 {
+    let Ok(entries) = std::fs::read_dir(dir) else { return 0 };
+    entries.flatten().map(|e| match e.metadata() {
+        Ok(m) if m.is_dir() => dir_size(&e.path()),
+        Ok(m) => m.len(),
+        Err(_) => 0,
+    }).sum()
+}
+
+/// Files still open (playing, downloading) are skipped.
+pub fn clear_dir(dir: &Path) {
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    for e in entries.flatten() {
+        if e.path().is_dir() {
+            clear_dir(&e.path());
+            let _ = std::fs::remove_dir(e.path());
+        } else {
+            let _ = std::fs::remove_file(e.path());
         }
     }
 }
