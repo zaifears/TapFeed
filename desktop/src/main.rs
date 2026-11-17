@@ -19,6 +19,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, State, WebviewWindow};
+use tauri_plugin_window_state::StateFlags;
 
 // ---------------------------------------------------------------------------
 // state
@@ -979,8 +980,21 @@ fn main() {
     let migration = runtime::migrate_from_tapo_viewer();
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        // The page shows the window itself; fullscreen is not restored.
+        .plugin(
+            tauri_plugin_window_state::Builder::default()
+                .with_state_flags(StateFlags::all() - StateFlags::VISIBLE - StateFlags::FULLSCREEN)
+                .build(),
+        )
         .setup(move |app| {
             let handle = app.handle().clone();
+            // Maximized until a window state has been saved.
+            let saved = app.path().app_config_dir().map(|d| d.join(tauri_plugin_window_state::DEFAULT_FILENAME).exists());
+            if !saved.unwrap_or(false) {
+                if let Some(w) = app.get_webview_window("main") {
+                    let _ = w.maximize();
+                }
+            }
             let h2 = handle.clone();
             let helper = Helper::new(
                 Arc::new(move |ev| on_helper_event(&h2, ev)),

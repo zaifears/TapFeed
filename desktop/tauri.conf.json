@@ -17,7 +17,7 @@
         "minWidth": 960,
         "minHeight": 620,
         "visible": false,
-        "maximized": true,
+        "maximized": false,
         "center": true,
         "backgroundColor": "#101318"
       }
