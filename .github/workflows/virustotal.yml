@@ -3,6 +3,10 @@ name: VirusTotal scan
 # Scans TapFeed.exe from a GitHub release with VirusTotal, then records the
 # result: the README badge, a row in docs/SECURITY-SCAN.md, and a line in the
 # release notes. Needs the repository secret VIRUSTOTAL_API_KEY.
+#
+# New releases are built and scanned by release.yml before they are
+# published (a release made by Actions does not trigger this file). This
+# one is for releases published by hand and for re-scans (Run workflow).
 
 on:
   release:

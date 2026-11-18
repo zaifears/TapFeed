@@ -1,0 +1,202 @@
+name: Release
+
+# Pushing a tag such as v2.1.0 builds TapFeed.exe here, scans it with
+# VirusTotal, and only then publishes the GitHub release with the exe, the
+# notes from docs/releases/<tag>.md and the scan result. Nothing is published
+# if the build, the tests or the scan fail.
+#
+# Build inputs that are not in git are pinned:
+#   libmpv-2.dll  from the draft release "build-deps", checked against LIBMPV_SHA256
+#   Python helper packages from helper/constraints.txt
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to build and release, e.g. v2.1.0"
+        required: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  TAG: ${{ inputs.tag || github.ref_name }}
+  # mpv v0.42.0-38-gbcde6b93c (shinchiro mpv-dev x86_64, 2026-09-19)
+  LIBMPV_SHA256: 88504ee5560942a955405e99dfb5971368e4cf851321f36565bf2a667271db1b
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    env:
+      GH_TOKEN: ${{ github.token }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Check out the tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Tag must match the app version
+        # Otherwise the new exe would announce its own release as an update.
+        run: |
+          app=$(grep -m1 '^version' desktop/Cargo.toml | cut -d'"' -f2)
+          conf=$(python -c "import json; print(json.load(open('desktop/tauri.conf.json'))['version'])")
+          echo "tag $TAG, Cargo.toml $app, tauri.conf.json $conf"
+          if [ "v$app" != "$TAG" ] || [ "$conf" != "$app" ]; then
+            echo "::error::Tag $TAG does not match the app version (Cargo.toml $app, tauri.conf.json $conf)."
+            exit 1
+          fi
+
+      - name: Fetch libmpv (pinned)
+        run: |
+          mkdir -p vendor/libmpv
+          gh release download build-deps --repo "$GITHUB_REPOSITORY" --pattern libmpv-2.dll --dir vendor/libmpv
+          echo "$LIBMPV_SHA256  vendor/libmpv/libmpv-2.dll" | sha256sum -c -
+
+      - name: Build the camera helper (pinned packages)
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt -c helper/constraints.txt
+          python -c "import sys; sys.path.insert(0, 'helper'); import tswriter, tapo_helper; tswriter.selfcheck(); tapo_helper._selfcheck_labels(); print('helper self-checks ok')"
+          python helper/build_helper.py --force
+
+      - name: Set up Rust
+        run: rustup toolchain install stable --profile minimal --no-self-update && rustup default stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop
+
+      - name: Test
+        working-directory: desktop
+        run: cargo test --locked --bin tapfeed
+
+      - name: Build TapFeed.exe
+        working-directory: desktop
+        run: cargo build --release --locked
+
+      - name: Collect the exe
+        run: |
+          mkdir -p dist
+          cp desktop/target/release/tapfeed.exe dist/TapFeed.exe
+          ls -l dist
+          sha256sum dist/TapFeed.exe
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: TapFeed-exe
+          path: dist/TapFeed.exe
+          if-no-files-found: error
+          retention-days: 30
+
+  scan:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      status: ${{ steps.virustotal.outputs.status }}
+      detections: ${{ steps.virustotal.outputs.detections }}
+      total: ${{ steps.virustotal.outputs.total }}
+      sha256: ${{ steps.virustotal.outputs.sha256 }}
+      permalink: ${{ steps.virustotal.outputs.permalink }}
+      release_note: ${{ steps.virustotal.outputs.release_note }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: TapFeed-exe
+          path: dist
+
+      - name: Scan with VirusTotal
+        id: virustotal
+        env:
+          VT_API_KEY: ${{ secrets.VIRUSTOTAL_API_KEY }}
+        # Fails (and so stops the release) when 5 or more engines flag the exe.
+        run: |
+          chmod +x .github/scripts/virustotal-scan.sh
+          .github/scripts/virustotal-scan.sh dist/TapFeed.exe
+
+  publish:
+    needs: scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Check out main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: TapFeed-exe
+          path: dist
+
+      - name: Exe must be the one that was scanned
+        env:
+          SCANNED: ${{ needs.scan.outputs.sha256 }}
+        run: |
+          actual=$(sha256sum dist/TapFeed.exe | cut -d' ' -f1)
+          echo "built $actual, scanned $SCANNED"
+          [ "$actual" = "$SCANNED" ] || { echo "::error::The exe changed after the scan."; exit 1; }
+
+      - name: Publish the release
+        env:
+          NOTE: ${{ needs.scan.outputs.release_note }}
+        run: |
+          notes="docs/releases/$TAG.md"
+          if [ -f "$notes" ]; then cp "$notes" notes.md; else echo "TapFeed ${TAG#v}" > notes.md; fi
+          printf '\n%s\n' "$NOTE" >> notes.md
+          gh release create "$TAG" dist/TapFeed.exe \
+            --repo "$GITHUB_REPOSITORY" --verify-tag \
+            --title "TapFeed ${TAG#v}" --notes-file notes.md
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json url,isDraft,isPrerelease,assets \
+            --jq '{url, isDraft, isPrerelease, assets: [.assets[].name]}'
+
+      - name: Record the scan (badge and history)
+        if: needs.scan.outputs.status == 'completed'
+        env:
+          FLAGGED: ${{ needs.scan.outputs.detections }}
+          TOTAL: ${{ needs.scan.outputs.total }}
+          SHA256: ${{ needs.scan.outputs.sha256 }}
+          PERMALINK: ${{ needs.scan.outputs.permalink }}
+        run: |
+          colour=brightgreen
+          [ "$FLAGGED" -gt 0 ] && colour=orange
+          [ "$FLAGGED" -ge 5 ] && colour=red
+          printf '{"schemaVersion":1,"label":"VirusTotal","message":"%s/%s","color":"%s"}\n' \
+            "$FLAGGED" "$TOTAL" "$colour" > .github/badges/virustotal.json
+
+          ref="https://github.com/${GITHUB_REPOSITORY}/releases/tag/$TAG"
+          row="| [\`$TAG\`]($ref) | \`TapFeed.exe\` | $FLAGGED / $TOTAL | [report]($PERMALINK) | \`$SHA256\` |"
+          grep -v "$SHA256" docs/SECURITY-SCAN.md > docs/SECURITY-SCAN.md.tmp || true
+          awk -v row="$row" '{print} /^\|---/ && !done {print row; done=1}' \
+            docs/SECURITY-SCAN.md.tmp > docs/SECURITY-SCAN.md
+          rm -f docs/SECURITY-SCAN.md.tmp
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .github/badges/virustotal.json docs/SECURITY-SCAN.md
+          if git diff --cached --quiet; then
+            echo "No change to record."
+          else
+            git commit -m "Record the $TAG VirusTotal scan [skip ci]"
+            git push origin HEAD:main
+          fi

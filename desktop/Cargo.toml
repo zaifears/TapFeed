@@ -1,6 +1,6 @@
 [package]
 name = "tapfeed"
-version = "2.0.0"
+version = "2.1.0"
 edition = "2021"
 description = "Watch a Tapo camera live and browse its SD card recordings"
 license = "MIT"
