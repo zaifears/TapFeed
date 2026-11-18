@@ -537,9 +537,14 @@ fn player_control(app: State<App>, action: String, value: Option<String>) -> Res
     let p = player(&app)?;
     let r = match action.as_str() {
         "stop" => {
-            *app.media.lock().unwrap() = Media::None;
+            let was = std::mem::replace(&mut *app.media.lock().unwrap(), Media::None);
             *app.live_paused.lock().unwrap() = false;
-            p.command(&["stop"])
+            let r = p.command(&["stop"]);
+            // Stopping a clip that is still loading for watching cancels its download.
+            if let Media::Clip(path) = was {
+                cancel_view(&app, &path);
+            }
+            r
         }
         "pause" => p.command(&["cycle", "pause"]),
         "seek" => p.command(&["seek", value.as_deref().unwrap_or("10"), "relative"]),
@@ -722,10 +727,27 @@ fn cancel_download(handle: AppHandle, app: State<App>, key: String) {
             }
         }
     }
+    applog::write(&format!("download {key}: cancel requested (running: {running})"));
     if running {
         app.helper.send("cancel");
     }
     emit_downloads(&handle);
+}
+
+/// Cancel the watch download writing `path`, if one is queued or running.
+fn cancel_view(app: &App, path: &str) {
+    let mut running = false;
+    for d in app.downloads.lock().unwrap().iter_mut().filter(|d| d.kind == "view" && d.path == path) {
+        match d.state.as_str() {
+            "queued" => d.state = "cancelled".into(),
+            "downloading" => running = true,
+            _ => {}
+        }
+    }
+    if running {
+        applog::write(&format!("watch download of {path} cancelled by stop"));
+        app.helper.send("cancel");
+    }
 }
 
 #[tauri::command]

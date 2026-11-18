@@ -902,7 +902,8 @@ const thumbObserver = new IntersectionObserver((entries) => {
 
 async function loadThumbs() {
   // The camera serves one recording stream at a time.
-  const downloading = state.downloads.some((d) => d.state === "downloading");
+  // Wait for the whole queue: each fetch would hold the next download back.
+  const downloading = state.downloads.some(isActive);
   if (thumbBusy || !thumbWanted.size || !state.connected || downloading) return;
   thumbBusy = true;
   const starts = [...thumbWanted].slice(0, 8);

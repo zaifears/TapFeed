@@ -106,6 +106,33 @@ def _stream_request(tapo: Tapo, method: str, start: int, end: int) -> Dict[str, 
     return {"type": "request", "seq": 1, "params": {**params, "method": "get"}}
 
 
+_END = object()
+
+
+async def _next_or_cancel(stream, cancel: threading.Event, stall: float):
+    """Next item of `stream`; None once `cancel` is set (checked every 0.25 s),
+    _END when the stream ends. Silence longer than `stall` is an error."""
+    task = asyncio.ensure_future(stream.__anext__())
+    waited = 0.0
+    while True:
+        done, _ = await asyncio.wait({task}, timeout=0.25)
+        if done:
+            try:
+                return task.result()
+            except StopAsyncIteration:
+                return _END
+        waited += 0.25
+        if cancel.is_set() or waited >= stall:
+            task.cancel()
+            try:
+                await task
+            except (asyncio.CancelledError, StopAsyncIteration, Exception):  # noqa: BLE001
+                pass
+            if cancel.is_set():
+                return None
+            raise HelperError("ERR_CAMERA_TIMEOUT", "The camera stopped sending the recording.")
+
+
 def _data_url(jpeg: bytes) -> str:
     return "data:image/jpeg;base64," + base64.b64encode(jpeg).decode()
 
@@ -145,8 +172,14 @@ class Session:
         self.time_correction = 0
         self.ptz: Dict[str, Any] = {"pan_tilt": False, "presets": False}
         self.motor_lock = threading.Lock()
+        # Cancel flag of the download the reader started last. Each download
+        # gets its own, so starting one can never wipe a cancel meant for it.
         self.cancel = threading.Event()
         self.busy = threading.Lock()
+        # Held by whoever has the camera's recording stream (download or thumbnails).
+        self.stream_lock = threading.Lock()
+        # Set from the moment a download is read until it ends; thumbnails yield to it.
+        self.download_wanted = threading.Event()
 
     # -- commands -----------------------------------------------------------
     def connect(self, req: Dict[str, Any]) -> Dict[str, Any]:
@@ -271,21 +304,36 @@ class Session:
                     out[str(start)] = _data_url(f.read())
             else:
                 missing.append(start)
-        if missing:
+        # The camera serves one recording stream at a time and downloads come
+        # first: skip while one runs (missing keys are asked again later).
+        if not missing or self.download_wanted.is_set() or not self.stream_lock.acquire(blocking=False):
+            return out
+        try:
             tapo.getUserID()  # may log in with an event loop of its own: cache it before ours
 
             async def fetch() -> None:
                 images = getRecordingSnapshots(tapo, missing, timeout=THUMB_TIMEOUT)
-                for start, image in zip(missing, [i async for i in images]):
-                    out[str(start)] = _data_url(image) if image else None
-                    if image:
-                        with open(os.path.join(folder, f"{start}.jpg"), "wb") as f:
-                            f.write(image)
+                try:
+                    for start in missing:
+                        # A clip without an image costs THUMB_TIMEOUT; stop for a download.
+                        if self.download_wanted.is_set():
+                            print("thumbnails stopped for a download", file=sys.stderr)
+                            return
+                        image = await images.__anext__()
+                        out[str(start)] = _data_url(image) if image else None
+                        if image:
+                            with open(os.path.join(folder, f"{start}.jpg"), "wb") as f:
+                                f.write(image)
+                except StopAsyncIteration:
+                    pass
+                finally:
+                    await images.aclose()
 
-            try:
-                asyncio.run(fetch())
-            except Exception as exc:  # noqa: BLE001 - camera busy: asked again later
-                print(f"thumbnails unavailable: {exc}", file=sys.stderr)
+            asyncio.run(fetch())
+        except Exception as exc:  # noqa: BLE001 - camera busy: asked again later
+            print(f"thumbnails unavailable: {exc}", file=sys.stderr)
+        finally:
+            self.stream_lock.release()
         return out
 
     def download(self, req: Dict[str, Any], progress: Callable[[Dict[str, Any]], None]) -> Dict[str, Any]:
@@ -295,42 +343,66 @@ class Session:
         os.makedirs(os.path.dirname(path), exist_ok=True)
         if time.time() - FRESH_SECONDS - self.time_correction < end:
             raise HelperError("ERR_DOWNLOAD_EMPTY", "The recording is still in progress.")
+        cancel: threading.Event = req.get("_cancel") or threading.Event()
+        name = os.path.basename(path)
         if not self.busy.acquire(blocking=False):
             raise HelperError("ERR_CAMERA_BUSY", "Another download is already running.")
-        self.cancel.clear()
         try:
-            # .part marks it unfinished; the app deletes both files on failure
-            open(path + ".part", "wb").close()
-            with open(path, "wb") as out:
-                # getUserID() may log in with an event loop of its own, so not inside ours
-                requests = [_stream_request(tapo, m, start, end) for m in ("download", "playback")]
-                asyncio.run(self._download(tapo, requests, end - start, TsWriter(out), progress))
+            # Wait for a thumbnail fetch to let go of the camera (it stops between images).
+            waited = time.monotonic()
+            while not self.stream_lock.acquire(timeout=0.2):
+                if cancel.is_set():
+                    raise HelperError("ERR_DOWNLOAD_CANCELLED", "Download cancelled.")
+            try:
+                if time.monotonic() - waited > 0.5:
+                    print(f"download {name}: camera free after {time.monotonic() - waited:.1f}s", file=sys.stderr)
+                # .part marks it unfinished; the app deletes both files on failure
+                open(path + ".part", "wb").close()
+                with open(path, "wb") as out:
+                    # getUserID() may log in with an event loop of its own, so not inside ours
+                    requests = [_stream_request(tapo, m, start, end) for m in ("download", "playback")]
+                    writer = TsWriter(out)
+                    began = time.monotonic()
+                    print(f"download {name}: started ({end - start}s of video)", file=sys.stderr)
+                    asyncio.run(self._download(tapo, requests, end - start, writer, progress, cancel, name))
+            finally:
+                self.stream_lock.release()
         finally:
             self.busy.release()
 
-        if self.cancel.is_set():
+        if cancel.is_set():
+            print(f"download {name}: cancelled", file=sys.stderr)
             raise HelperError("ERR_DOWNLOAD_CANCELLED", "Download cancelled.")
-        if os.path.getsize(path) <= 1024:
-            raise HelperError("ERR_DOWNLOAD_EMPTY", f"The camera sent no video for this clip ({os.path.basename(path)}).")
+        size = os.path.getsize(path)
+        print(f"download {name}: done, {size / 1048576:.1f} MB, {writer.seconds:.0f}s of video"
+              f" in {time.monotonic() - began:.1f}s", file=sys.stderr)
+        if size <= 1024:
+            raise HelperError("ERR_DOWNLOAD_EMPTY", f"The camera sent no video for this clip ({name}).")
         os.remove(path + ".part")
-        return {"path": path, "bytes": os.path.getsize(path)}
+        return {"path": path, "bytes": size}
 
-    async def _download(self, tapo, requests, total, writer, progress) -> None:
+    async def _download(self, tapo, requests, total, writer, progress, cancel, name) -> None:
+        began = time.monotonic()
         for req in requests:
             method = next(iter(req["params"]))
             last_report = 0.0
             session = tapo.getMediaSession(StreamType.Download)
             session.set_window_size(200)
             async with session:
-                stream = session.transceive(json.dumps(req))
+                # No pytapo timeout: on 10 s of silence it would end the stream
+                # quietly and a cut-off clip would pass for a finished one.
+                # STALL_SECONDS below turns silence into an error instead.
+                stream = session.transceive(json.dumps(req), no_data_timeout=None)
                 try:
-                    while not self.cancel.is_set():
-                        try:
-                            resp = await asyncio.wait_for(stream.__anext__(), timeout=STALL_SECONDS)
-                        except StopAsyncIteration:
+                    while True:
+                        resp = await _next_or_cancel(stream, cancel, STALL_SECONDS)
+                        if resp is None:  # cancelled
                             return
-                        except asyncio.TimeoutError:
-                            raise HelperError("ERR_CAMERA_TIMEOUT", "The camera stopped sending the recording.")
+                        if resp is _END:
+                            return
+                        if writer.out.tell() == 0 and resp.mimetype == "video/mp2t":
+                            print(f"download {name}: first data after {time.monotonic() - began:.1f}s ({method})",
+                                  file=sys.stderr)
                         if resp.mimetype == "video/mp2t":
                             done = writer.feed(resp.plaintext)
                             now = time.monotonic()
@@ -355,8 +427,6 @@ class Session:
                                 raise HelperError("ERR_DOWNLOAD_FAILED", f"Camera refused the recording (code {code}).")
                             if params.get("event_type") == "stream_status" and params.get("status") == "finished":
                                 return
-                    else:
-                        return
                 finally:
                     await stream.aclose()
 
@@ -519,6 +589,8 @@ def main() -> None:
             continue
         cmd = req.get("cmd")
         if cmd == "cancel":
+            # Commands are read in order, so this is the download read last.
+            print("cancel received", file=sys.stderr)
             session.cancel.set()
             send({"id": req.get("id"), "ok": True, "result": {}})
         elif cmd == "shutdown":
@@ -526,6 +598,21 @@ def main() -> None:
             break
         elif cmd == "download":
             # Downloads run beside the reader so "cancel" can still arrive.
+            cancel = threading.Event()
+            session.cancel = cancel
+            session.download_wanted.set()
+            req["_cancel"] = cancel
+
+            def run_download(req: Dict[str, Any] = req, cancel: threading.Event = cancel) -> None:
+                try:
+                    run(req)
+                finally:
+                    if session.cancel is cancel:
+                        session.download_wanted.clear()
+
+            threading.Thread(target=run_download, daemon=True).start()
+        elif cmd == "thumbnails":
+            # Slow (seconds per clip without an image): never hold up the reader.
             threading.Thread(target=run, args=(req,), daemon=True).start()
         else:
             run(req)
