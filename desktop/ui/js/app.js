@@ -230,15 +230,46 @@ function updateVideoVisibility() {
 }
 
 // ---------------------------------------------------------------- sign in
+// Stands in for a saved password so the box looks filled. The real password
+// never reaches the page: it stays in Windows Credential Manager and the app
+// reads it at sign-in when the box still holds this filler.
+const SAVED = "⁣".repeat(8);
+const revealButton = (id) => document.querySelector(`[data-reveal="${id}"]`);
+const isSaved = (id) => $(id).value === SAVED;
+// What to send: the typed password, or "" for "use the one saved on this PC".
+const typedPassword = (id) => (isSaved(id) ? "" : $(id).value);
+
+function markSaved(id, saved) {
+  const input = $(id);
+  input.value = saved ? SAVED : "";
+  input.type = "password";
+  input.placeholder = "";
+  input.title = saved ? t("login.savedPassword") : "";
+  const reveal = revealButton(id);
+  reveal.textContent = t("login.show");
+  reveal.hidden = saved; // nothing to show: the filler is not the password
+}
+
+for (const id of ["password", "cloudPassword"]) {
+  // Clicking in selects the filler, so typing replaces it.
+  $(id).addEventListener("focus", () => {
+    if (isSaved(id)) $(id).select();
+  });
+  // Editing the filler (say one backspace) leaves no part of it behind.
+  $(id).addEventListener("input", () => {
+    const input = $(id);
+    if (input.value.includes("⁣")) input.value = input.value.replaceAll("⁣", "");
+    input.title = "";
+    revealButton(id).hidden = false;
+  });
+}
+
 async function fillSavedLogin() {
   const s = await invoke("saved_login").catch(() => ({}));
   $("host").value = s.host || "";
   $("username").value = s.username || "";
-  $("password").value = "";
-  $("cloudPassword").value = "";
-  state.savedPassword = !!s.hasPassword;
-  $("password").placeholder = s.hasPassword ? t("login.savedPassword") : "";
-  $("cloudPassword").placeholder = s.hasCloudPassword ? t("login.savedPassword") : "";
+  markSaved("password", !!s.hasPassword);
+  markSaved("cloudPassword", !!s.hasCloudPassword);
   $("remember").checked = !!s.remember;
   if (s.hasCloudPassword) $("cloudToggle").checked = true;
   $("cloudField").hidden = !$("cloudToggle").checked;
@@ -275,16 +306,16 @@ $("loginForm").addEventListener("submit", async (e) => {
   e.preventDefault();
   const host = $("host").value.trim();
   const username = $("username").value.trim();
-  const password = $("password").value;
+  const password = typedPassword("password");
   for (const id of ["host", "username", "password"]) $(id).removeAttribute("aria-invalid");
-  const missing = [["host", host], ["username", username], ["password", password || (state.savedPassword ? "saved" : "")]].filter(([, v]) => !v);
+  const missing = [["host", host], ["username", username], ["password", password || (isSaved("password") ? "saved" : "")]].filter(([, v]) => !v);
   if (missing.length) {
     missing.forEach(([id]) => $(id).setAttribute("aria-invalid", "true"));
     showLoginError({ code: "ERR_INPUT" });
     $(missing[0][0]).focus();
     return;
   }
-  const cloud = $("cloudToggle").checked ? $("cloudPassword").value : "";
+  const cloud = $("cloudToggle").checked ? typedPassword("cloudPassword") : "";
   const btn = $("btnConnect");
   btn.classList.add("is-loading");
   btn.disabled = true;
@@ -350,9 +381,8 @@ $("btnTest").addEventListener("click", async () => {
 for (const id of ["host", "username"]) {
   $(id).addEventListener("change", () => {
     // A saved password belongs to one camera and user only.
-    state.savedPassword = false;
-    $("password").placeholder = "";
-    $("cloudPassword").placeholder = "";
+    if (isSaved("password")) markSaved("password", false);
+    if (isSaved("cloudPassword")) markSaved("cloudPassword", false);
   });
 }
 $("host").addEventListener("input", () => {
