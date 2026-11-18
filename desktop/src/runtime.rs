@@ -161,12 +161,15 @@ pub fn prune_old_thumbs() {
 pub fn trim_cache(limit: u64, at_start: bool) {
     let mut clips = Vec::new();
     let mut total = 0;
-    for f in cached_files("clips") {
+    let mut files = cached_files("clips");
+    // Markers last, so a clip is gone before its marker is.
+    files.sort_by_key(|f| is_part_marker(&f.path()));
+    for f in files {
         let path = f.path();
-        let marker = path.extension().is_some_and(|x| x == "part");
-        let unfinished = marker || path.with_extension("mkv.part").exists();
+        let marker = is_part_marker(&path);
+        let unfinished = marker || part_marker(&path).exists();
         if at_start && unfinished {
-            let _ = std::fs::remove_file(&path);
+            remove_cached(&path);
             continue;
         }
         let Ok(meta) = f.metadata() else { continue };
@@ -198,14 +201,37 @@ pub fn dir_size(dir: &Path) -> u64 {
 /// Files still open (playing, downloading) are skipped.
 pub fn clear_dir(dir: &Path) {
     let Ok(entries) = std::fs::read_dir(dir) else { return };
-    for e in entries.flatten() {
-        if e.path().is_dir() {
-            clear_dir(&e.path());
-            let _ = std::fs::remove_dir(e.path());
+    let mut entries: Vec<_> = entries.flatten().map(|e| e.path()).collect();
+    // Markers last, so a clip is gone before its marker is.
+    entries.sort_by_key(|p| is_part_marker(p));
+    for path in entries {
+        if path.is_dir() {
+            clear_dir(&path);
+            let _ = std::fs::remove_dir(&path);
         } else {
-            let _ = std::fs::remove_file(e.path());
+            remove_cached(&path);
         }
     }
+}
+
+/// `<clip>.part` exists while `<clip>` is still downloading.
+pub fn part_marker(path: &Path) -> PathBuf {
+    let mut s = path.as_os_str().to_owned();
+    s.push(".part");
+    PathBuf::from(s)
+}
+
+fn is_part_marker(path: &Path) -> bool {
+    path.extension().is_some_and(|x| x == "part")
+}
+
+/// A marker is kept while its clip could not be deleted (still open),
+/// so the leftover is never taken for a finished clip.
+fn remove_cached(path: &Path) {
+    if is_part_marker(path) && path.with_extension("").exists() {
+        return;
+    }
+    let _ = std::fs::remove_file(path);
 }
 
 pub fn prune_old_runtimes() {

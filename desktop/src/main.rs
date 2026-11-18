@@ -113,11 +113,7 @@ fn existing_file(dir: &Path, start: i64, end: i64) -> Option<PathBuf> {
     })
 }
 
-fn part_marker(path: &Path) -> PathBuf {
-    let mut s = path.as_os_str().to_owned();
-    s.push(".part");
-    PathBuf::from(s)
-}
+use runtime::part_marker;
 
 fn signed_in_host(app: &App) -> Res<String> {
     app.session.lock().unwrap().as_ref().map(|s| s.host.clone())
