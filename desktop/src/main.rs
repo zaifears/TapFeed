@@ -533,7 +533,7 @@ fn play_file(app: State<App>, path: String, growing: Option<bool>) -> Res<()> {
 }
 
 #[tauri::command]
-fn player_control(app: State<App>, action: String, value: Option<String>) -> Res<()> {
+fn player_control(handle: AppHandle, app: State<App>, action: String, value: Option<String>) -> Res<()> {
     let p = player(&app)?;
     let r = match action.as_str() {
         "stop" => {
@@ -543,6 +543,7 @@ fn player_control(app: State<App>, action: String, value: Option<String>) -> Res
             // Stopping a clip that is still loading for watching cancels its download.
             if let Media::Clip(path) = was {
                 cancel_view(&app, &path);
+                emit_downloads(&handle);
             }
             r
         }
@@ -647,27 +648,72 @@ fn active(d: &Download) -> bool {
 
 /// Views go ahead of waiting saves.
 fn enqueue(handle: &AppHandle, app: &App, kind: &str, start: i64, end: i64, path: PathBuf) -> Download {
-    let key = clip_key(start, end);
-    let item = {
-        let mut list = app.downloads.lock().unwrap();
-        if let Some(d) = list.iter().find(|d| d.key == key && d.kind == kind && active(d)) {
-            return d.clone();
-        }
-        list.retain(|d| !(d.key == key && d.kind == kind));
-        let item = Download {
-            key, kind: kind.into(), start, end,
-            path: path.to_string_lossy().to_string(),
-            state: "queued".into(),
-            progress: 0.0,
-            error: None,
-        };
-        let at = if kind == "view" { list.iter().position(|d| d.state == "queued").unwrap_or(list.len()) } else { list.len() };
-        list.insert(at, item.clone());
-        item
-    };
+    let item = add_job(&mut app.downloads.lock().unwrap(), kind, start, end, path.to_string_lossy().to_string());
     app.wake.notify_one();
     emit_downloads(handle);
     item
+}
+
+// ---------------------------------------------------------------------------
+// download list: plain functions so the queue rules can be tested
+// ---------------------------------------------------------------------------
+
+/// Queue a job, or return the one already queued/running for this clip and kind.
+fn add_job(list: &mut Vec<Download>, kind: &str, start: i64, end: i64, path: String) -> Download {
+    let key = clip_key(start, end);
+    if let Some(d) = list.iter().find(|d| d.key == key && d.kind == kind && active(d)) {
+        return d.clone();
+    }
+    list.retain(|d| !(d.key == key && d.kind == kind));
+    let item = Download {
+        key, kind: kind.into(), start, end, path,
+        state: "queued".into(),
+        progress: 0.0,
+        error: None,
+    };
+    let at = if kind == "view" { list.iter().position(|d| d.state == "queued").unwrap_or(list.len()) } else { list.len() };
+    list.insert(at, item.clone());
+    item
+}
+
+/// Mark the first queued job as running and return it.
+fn take_next(list: &mut [Download]) -> Option<Download> {
+    list.iter_mut().find(|d| d.state == "queued").map(|d| {
+        d.state = "downloading".into();
+        d.clone()
+    })
+}
+
+/// Record how `job` ended.
+fn finish_job(list: &mut [Download], job: &Download, result: &Res<Value>) {
+    // Key alone is not enough: a clip can have a watch and a save entry, and
+    // marking the wrong one left the other "downloading" forever (and that
+    // stale entry then took every later job's progress).
+    if let Some(d) = list.iter_mut().find(|d| d.key == job.key && d.kind == job.kind && d.state == "downloading") {
+        match result {
+            Ok(_) => {
+                d.state = "done".into();
+                d.progress = 1.0;
+            }
+            Err(e) if e.code == "ERR_DOWNLOAD_CANCELLED" => d.state = "cancelled".into(),
+            Err(e) => {
+                applog::write(&format!("download {} failed: {} {}", job.key, e.code, e.message));
+                d.state = "failed".into();
+                d.error = Some(e.clone());
+            }
+        }
+    }
+}
+
+/// Progress from the helper, for the running job. True if something changed.
+fn set_progress(list: &mut [Download], p: f64, t: f64) -> bool {
+    match list.iter_mut().find(|d| d.state == "downloading") {
+        Some(d) if t > 0.0 => {
+            d.progress = (p / t).clamp(0.0, 0.99);
+            true
+        }
+        _ => false,
+    }
 }
 
 #[tauri::command]
@@ -715,11 +761,13 @@ fn clear_cache() -> u64 {
 }
 
 #[tauri::command]
-fn cancel_download(handle: AppHandle, app: State<App>, key: String) {
+/// `kind`: "save" (default) or "view", a clip still loading for watching.
+fn cancel_download(handle: AppHandle, app: State<App>, key: String, kind: Option<String>) {
+    let kind = kind.unwrap_or_else(|| "save".into());
     let mut running = false;
     {
         let mut list = app.downloads.lock().unwrap();
-        if let Some(d) = list.iter_mut().find(|d| d.key == key && d.kind == "save") {
+        if let Some(d) = list.iter_mut().find(|d| d.key == key && d.kind == kind && active(d)) {
             match d.state.as_str() {
                 "queued" => d.state = "cancelled".into(),
                 "downloading" => running = true,
@@ -764,14 +812,7 @@ fn clear_finished_downloads(handle: AppHandle, app: State<App>) {
 /// One download at a time: the camera serves a single recording stream.
 async fn download_worker(handle: AppHandle) {
     loop {
-        let next = {
-            let app = handle.state::<App>();
-            let mut list = app.downloads.lock().unwrap();
-            list.iter_mut().find(|d| d.state == "queued").map(|d| {
-                d.state = "downloading".into();
-                d.clone()
-            })
-        };
+        let next = take_next(&mut handle.state::<App>().downloads.lock().unwrap());
         let Some(job) = next else {
             resume_live(&handle);
             handle.state::<App>().wake.notified().await;
@@ -782,24 +823,7 @@ async fn download_worker(handle: AppHandle) {
 
         let result = fetch(&handle, &job).await;
         let failed = result.is_err();
-        {
-            let app = handle.state::<App>();
-            let mut list = app.downloads.lock().unwrap();
-            if let Some(d) = list.iter_mut().find(|d| d.key == job.key) {
-                match result {
-                    Ok(_) => {
-                        d.state = "done".into();
-                        d.progress = 1.0;
-                    }
-                    Err(e) if e.code == "ERR_DOWNLOAD_CANCELLED" => d.state = "cancelled".into(),
-                    Err(e) => {
-                        applog::write(&format!("download {} failed: {} {}", job.key, e.code, e.message));
-                        d.state = "failed".into();
-                        d.error = Some(e);
-                    }
-                }
-            }
-        }
+        finish_job(&mut handle.state::<App>().downloads.lock().unwrap(), &job, &result);
         if failed {
             discard_partial(&handle, &job.path);
         } else if job.kind == "view" {
@@ -877,17 +901,7 @@ fn on_helper_event(handle: &AppHandle, ev: Value) {
         return;
     }
     let (p, t) = (ev["progress"].as_f64().unwrap_or(0.0), ev["total"].as_f64().unwrap_or(0.0));
-    let app = handle.state::<App>();
-    let changed = {
-        let mut list = app.downloads.lock().unwrap();
-        match list.iter_mut().find(|d| d.state == "downloading") {
-            Some(d) if t > 0.0 => {
-                d.progress = (p / t).clamp(0.0, 0.99);
-                true
-            }
-            _ => false,
-        }
-    };
+    let changed = set_progress(&mut handle.state::<App>().downloads.lock().unwrap(), p, t);
     if changed {
         emit_downloads(handle);
     }
@@ -1062,4 +1076,66 @@ fn main() {
                 handle.state::<App>().helper.shutdown();
             }
         });
+}
+
+#[cfg(test)]
+mod queue_tests {
+    use super::*;
+
+    fn run(list: &mut Vec<Download>, result: Res<Value>) -> Download {
+        let job = take_next(list).expect("a queued job");
+        finish_job(list, &job, &result);
+        job
+    }
+    fn state(list: &[Download], key: &str, kind: &str) -> (String, f64) {
+        let d = list.iter().find(|d| d.key == key && d.kind == kind).unwrap();
+        (d.state.clone(), d.progress)
+    }
+
+    /// 18 Nov: watch A, download A (copied from the cache), then download B.
+    #[test]
+    fn saving_a_watched_clip_finishes_the_save() {
+        let mut list = Vec::new();
+        let (a, b) = (clip_key(100, 200), clip_key(300, 400));
+        add_job(&mut list, "view", 100, 200, "cache/a.ts".into());
+        run(&mut list, Ok(json!({})));
+        add_job(&mut list, "save", 100, 200, "dl/a.ts".into());
+        run(&mut list, Ok(json!({ "bytes": 1 })));
+        assert_eq!(state(&list, &a, "save").0, "done", "save of a watched clip stuck");
+
+        add_job(&mut list, "save", 300, 400, "dl/b.ts".into());
+        let job = take_next(&mut list).unwrap();
+        assert_eq!(job.key, b);
+        set_progress(&mut list, 30.0, 100.0);
+        assert_eq!(state(&list, &b, "save"), ("downloading".into(), 0.3), "B's progress went elsewhere");
+        assert_eq!(state(&list, &a, "save").0, "done");
+        finish_job(&mut list, &job, &Ok(json!({})));
+        assert!(list.iter().all(|d| d.state == "done"), "a job left running");
+    }
+
+    /// Download A first, then watch it: the view must finish too.
+    #[test]
+    fn watching_a_saved_clip_finishes_the_view() {
+        let mut list = Vec::new();
+        let a = clip_key(100, 200);
+        add_job(&mut list, "save", 100, 200, "dl/a.ts".into());
+        run(&mut list, Ok(json!({})));
+        add_job(&mut list, "view", 100, 200, "cache/a.ts".into());
+        run(&mut list, Ok(json!({})));
+        assert_eq!(state(&list, &a, "view").0, "done", "view of a saved clip stuck");
+        assert!(take_next(&mut list).is_none());
+    }
+
+    /// A failure lands on the job that failed, not its namesake.
+    #[test]
+    fn failure_marks_the_right_job() {
+        let mut list = Vec::new();
+        let a = clip_key(100, 200);
+        add_job(&mut list, "view", 100, 200, "cache/a.ts".into());
+        run(&mut list, Ok(json!({})));
+        add_job(&mut list, "save", 100, 200, "dl/a.ts".into());
+        run(&mut list, Err(err("ERR_DOWNLOAD_FAILED", "x")));
+        assert_eq!(state(&list, &a, "save").0, "failed");
+        assert_eq!(state(&list, &a, "view").0, "done");
+    }
 }

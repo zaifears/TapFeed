@@ -504,7 +504,13 @@ $("btnPlayPause").addEventListener("click", () => {
   if (state.status.mode === "none") startLive();
   else invoke("player_control", { action: "pause" }).catch(() => {});
 });
-$("btnStop").addEventListener("click", () => invoke("player_control", { action: "stop" }).catch(() => {}));
+$("btnStop").addEventListener("click", () => {
+  if (state.pendingPlay) {
+    invoke("cancel_download", { key: state.pendingPlay, kind: "view" }).catch(() => {});
+    state.pendingPlay = null;
+  }
+  invoke("player_control", { action: "stop" }).catch(() => {});
+});
 $("btnBack10").addEventListener("click", () => invoke("player_control", { action: "seek", value: "-10" }).catch(() => {}));
 $("btnFwd10").addEventListener("click", () => invoke("player_control", { action: "seek", value: "10" }).catch(() => {}));
 $("btnMute").addEventListener("click", () => invoke("player_control", { action: "mute" }).catch(() => {}));
@@ -521,6 +527,12 @@ $("seek").addEventListener("change", (e) => {
   invoke("player_control", { action: "seek_to", value: String((e.target.value / 1000) * d) }).catch(() => {});
   state.seeking = false;
 });
+
+// The watch download of the clip waiting to play, if any.
+function pendingView() {
+  if (!state.pendingPlay) return null;
+  return state.downloads.find((d) => d.kind === "view" && d.key === state.pendingPlay && isActive(d)) || { state: "queued", progress: 0 };
+}
 
 function downloadedPart(st) {
   const d = state.downloads.find((x) => x.path === st.path && x.state === "downloading");
@@ -630,13 +642,18 @@ function renderPlayer(st) {
   detail.hidden = true;
   btn.hidden = false;
   btn.textContent = t("camera.startLive");
+  const pending = pendingView();
+  let loading = false;
   if (!st.ready) {
     if (st.failed) {
       const info = errorText("ERR_PLAYER_START");
       msg.textContent = info.title;
       detail.textContent = info.explanation;
       detail.hidden = false;
-    } else msg.textContent = t("camera.playerStarting");
+    } else {
+      msg.textContent = t("camera.playerStarting");
+      loading = true;
+    }
     btn.hidden = true;
   } else if (st.error) {
     const info = errorText(st.error);
@@ -644,12 +661,26 @@ function renderPlayer(st) {
     detail.textContent = info.explanation;
     detail.hidden = false;
     btn.textContent = t("camera.retry");
+  } else if (pending) {
+    // A clip was clicked and is still on its way from the camera.
+    msg.textContent = pending.state === "downloading"
+      ? t("camera.loadingClip", { percent: Math.round(pending.progress * 100) })
+      : t("camera.waitingClip");
+    btn.hidden = true;
+    loading = true;
   } else if (st.mode === "none") {
     msg.textContent = t(st.livePaused ? "camera.livePaused" : "camera.stopped");
   } else if (st.state !== "playing") {
     msg.textContent = t("camera.opening");
     btn.hidden = true;
+    loading = true;
   }
+  $("videoSpinner").hidden = !loading;
+
+  // Playing, but the player has caught up with what has arrived so far.
+  const part = downloadedPart(st);
+  const behind = part < 1 && length > 0 && (st.position || 0) >= part * length - 1;
+  $("buffering").hidden = !(clip && !st.paused && (st.buffering || behind));
 
   if (st.error && st.error !== state.lastPlayerError) {
     addProblem(st.error, st.detail, live ? "live view" : "playback");
@@ -1077,6 +1108,8 @@ function onDownloads(list) {
       addProblem(d.error?.code || "ERR_DOWNLOAD_FAILED", d.error?.message, "download");
       toast(errorText(d.error?.code || "ERR_DOWNLOAD_FAILED").title, "error");
       if (watched) state.pendingPlay = null;
+    } else if (d.state === "cancelled" && watched) {
+      state.pendingPlay = null;
     }
   }
   const active = saves().filter(isActive).length;
