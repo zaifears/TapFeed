@@ -19,6 +19,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, State, WebviewWindow};
+use tauri_plugin_window_state::StateFlags;
 
 // ---------------------------------------------------------------------------
 // state
@@ -40,6 +41,8 @@ enum Media {
 #[derive(Clone, Serialize)]
 struct Download {
     key: String,
+    /// view: into the cache for watching | save: into the downloads folder
+    kind: String,
     start: i64,
     end: i64,
     path: String,
@@ -57,6 +60,8 @@ struct App {
     player_error: Mutex<Option<String>>,
     host_hwnd: Mutex<Option<isize>>,
     media: Mutex<Media>,
+    /// Live view was stopped for a download; resume it when the queue is empty.
+    live_paused: Mutex<bool>,
     downloads: Mutex<Vec<Download>>,
     wake: tokio::sync::Notify,
 }
@@ -71,6 +76,7 @@ const SHORT: Duration = Duration::from_secs(60);
 /// Two login attempts at most; a reachable camera answers well within this.
 const CONNECT: Duration = Duration::from_secs(40);
 const LONG: Duration = Duration::from_secs(4 * 60 * 60);
+const CACHE_LIMIT: u64 = 1024 * 1024 * 1024;
 
 // ---------------------------------------------------------------------------
 // helpers
@@ -99,11 +105,27 @@ fn clip_base(start: i64, end: i64) -> String {
 }
 
 /// An existing download of this clip (.ts from this app, .mp4 from the Python one).
+/// A `.part` file next to it means the download never finished.
 fn existing_file(dir: &Path, start: i64, end: i64) -> Option<PathBuf> {
     let base = clip_base(start, end);
     ["ts", "mp4"].iter().map(|x| dir.join(format!("{base}.{x}"))).find(|p| {
-        p.metadata().map(|m| m.len() > 1024).unwrap_or(false)
+        p.metadata().map(|m| m.len() > 1024).unwrap_or(false) && !part_marker(p).exists()
     })
+}
+
+fn part_marker(path: &Path) -> PathBuf {
+    let mut s = path.as_os_str().to_owned();
+    s.push(".part");
+    PathBuf::from(s)
+}
+
+fn signed_in_host(app: &App) -> Res<String> {
+    app.session.lock().unwrap().as_ref().map(|s| s.host.clone())
+        .ok_or_else(|| err("ERR_NOT_CONNECTED", "not signed in"))
+}
+
+fn cached_clips(host: &str) -> PathBuf {
+    runtime::camera_cache_dir(host).join("clips")
 }
 
 fn player(app: &App) -> Res<Arc<Mpv>> {
@@ -313,6 +335,7 @@ async fn disconnect(handle: AppHandle, app: State<'_, App>) -> Res<()> {
         let _ = p.command(&["stop"]);
     }
     *app.media.lock().unwrap() = Media::None;
+    *app.live_paused.lock().unwrap() = false;
     *app.session.lock().unwrap() = None;
     {
         let mut list = app.downloads.lock().unwrap();
@@ -339,6 +362,7 @@ async fn recording_dates(app: State<'_, App>) -> Res<Value> {
 async fn list_recordings(app: State<'_, App>, date: String) -> Res<Vec<Value>> {
     let raw = app.helper.call("list_recordings", json!({ "date": date }), SHORT).await?;
     let dir = config::output_dir();
+    let cache = cached_clips(&signed_in_host(&app)?);
     let downloads = app.downloads.lock().unwrap().clone();
     Ok(raw
         .as_array()
@@ -351,12 +375,20 @@ async fn list_recordings(app: State<'_, App>, date: String) -> Res<Vec<Value>> {
             let file = existing_file(&dir, s, e);
             let dl = downloads.iter().rev().find(|d| d.key == key);
             json!({
-                "key": key, "start": s, "end": e, "motion": c["motion"],
+                "key": key, "start": s, "end": e, "motion": c["motion"], "types": c["types"],
                 "file": file,
+                "cache": existing_file(&cache, s, e),
                 "download": dl.map(|d| json!({"state": d.state, "progress": d.progress})),
             })
         })
         .collect())
+}
+
+/// Data URLs, null where the camera has no image.
+#[tauri::command]
+async fn clip_thumbnails(app: State<'_, App>, starts: Vec<i64>) -> Res<Value> {
+    let dir = runtime::camera_cache_dir(&signed_in_host(&app)?).join("thumbs");
+    app.helper.call("thumbnails", json!({ "starts": starts, "dir": dir }), SHORT).await
 }
 
 // ---------------------------------------------------------------------------
@@ -436,6 +468,7 @@ const LIVE_TUNING: &[(&str, &str)] = &[
     ("demuxer-lavf-o", "fflags=+nobuffer"),
     ("demuxer-lavf-analyzeduration", "0.5"),
     ("demuxer-lavf-probe-info", "nostreams"),
+    ("demuxer-lavf-probesize", "0"),
 ];
 
 /// Recorded clips: normal playback with exact audio sync and seeking.
@@ -448,6 +481,8 @@ const CLIP_TUNING: &[(&str, &str)] = &[
     ("demuxer-lavf-o", ""),
     ("demuxer-lavf-analyzeduration", "0"),
     ("demuxer-lavf-probe-info", "auto"),
+    // ffmpeg cannot identify the camera's audio (0x90) and would read 5 MB (~20 s) first.
+    ("demuxer-lavf-probesize", "524288"),
 ];
 
 fn tune(p: &Mpv, settings: &[(&str, &str)]) {
@@ -460,7 +495,12 @@ fn tune(p: &Mpv, settings: &[(&str, &str)]) {
 
 #[tauri::command]
 fn start_live(app: State<App>, quality: String) -> Res<()> {
-    let p = player(&app)?;
+    *app.live_paused.lock().unwrap() = false;
+    load_live(&app, &quality)
+}
+
+fn load_live(app: &App, quality: &str) -> Res<()> {
+    let p = player(app)?;
     let url = {
         let s = app.session.lock().unwrap();
         let s = s.as_ref().ok_or_else(|| err("ERR_NOT_CONNECTED", "not signed in"))?;
@@ -479,8 +519,9 @@ fn start_live(app: State<App>, quality: String) -> Res<()> {
     Ok(())
 }
 
+/// `growing`: still downloading; mpv keeps reading as it grows.
 #[tauri::command]
-fn play_file(app: State<App>, path: String) -> Res<()> {
+fn play_file(app: State<App>, path: String, growing: Option<bool>) -> Res<()> {
     if !Path::new(&path).exists() {
         return Err(err("ERR_FILE_MISSING", path));
     }
@@ -488,7 +529,9 @@ fn play_file(app: State<App>, path: String) -> Res<()> {
     p.clear_log();
     p.set("pause", "no").map_err(|e| err("ERR_PLAYBACK", e))?;
     tune(&p, CLIP_TUNING);
-    p.command(&["loadfile", &path]).map_err(|e| err("ERR_PLAYBACK_OPEN", e))?;
+    let url = if growing == Some(true) { format!("appending://{path}") } else { path.clone() };
+    p.command(&["loadfile", &url]).map_err(|e| err("ERR_PLAYBACK_OPEN", e))?;
+    *app.live_paused.lock().unwrap() = false;
     *app.media.lock().unwrap() = Media::Clip(path);
     Ok(())
 }
@@ -499,6 +542,7 @@ fn player_control(app: State<App>, action: String, value: Option<String>) -> Res
     let r = match action.as_str() {
         "stop" => {
             *app.media.lock().unwrap() = Media::None;
+            *app.live_paused.lock().unwrap() = false;
             p.command(&["stop"])
         }
         "pause" => p.command(&["cycle", "pause"]),
@@ -575,6 +619,7 @@ fn player_status(app: State<App>) -> Value {
     let num = |k: &str| p.get(k).and_then(|v| v.parse::<f64>().ok());
     json!({
         "ready": true,
+        "livePaused": *app.live_paused.lock().unwrap(),
         "mode": match &media { Media::None => "none", Media::Live => "live", Media::Clip(_) => "clip" },
         "path": match &media { Media::Clip(p) => Some(p.clone()), _ => None },
         "state": ev.state,
@@ -595,30 +640,77 @@ fn player_status(app: State<App>) -> Value {
 // downloads
 // ---------------------------------------------------------------------------
 
-#[tauri::command]
-fn queue_download(handle: AppHandle, app: State<App>, start: i64, end: i64) -> Res<Download> {
+fn active(d: &Download) -> bool {
+    d.state == "queued" || d.state == "downloading"
+}
+
+/// Views go ahead of waiting saves.
+fn enqueue(handle: &AppHandle, app: &App, kind: &str, start: i64, end: i64, path: PathBuf) -> Download {
     let key = clip_key(start, end);
-    let dir = config::output_dir();
-    let path = dir.join(format!("{}.ts", clip_base(start, end)));
     let item = {
         let mut list = app.downloads.lock().unwrap();
-        if let Some(d) = list.iter().find(|d| d.key == key && (d.state == "queued" || d.state == "downloading")) {
-            return Ok(d.clone());
+        if let Some(d) = list.iter().find(|d| d.key == key && d.kind == kind && active(d)) {
+            return d.clone();
         }
-        list.retain(|d| d.key != key);
+        list.retain(|d| !(d.key == key && d.kind == kind));
         let item = Download {
-            key, start, end,
+            key, kind: kind.into(), start, end,
             path: path.to_string_lossy().to_string(),
             state: "queued".into(),
             progress: 0.0,
             error: None,
         };
-        list.push(item.clone());
+        let at = if kind == "view" { list.iter().position(|d| d.state == "queued").unwrap_or(list.len()) } else { list.len() };
+        list.insert(at, item.clone());
         item
     };
     app.wake.notify_one();
-    emit_downloads(&handle);
-    Ok(item)
+    emit_downloads(handle);
+    item
+}
+
+#[tauri::command]
+fn queue_download(handle: AppHandle, app: State<App>, start: i64, end: i64) -> Res<Download> {
+    let path = config::output_dir().join(format!("{}.ts", clip_base(start, end)));
+    Ok(enqueue(&handle, &app, "save", start, end, path))
+}
+
+/// Plays from the cache, fetching the clip into it first if needed.
+#[tauri::command]
+fn view_clip(handle: AppHandle, app: State<App>, start: i64, end: i64) -> Res<Value> {
+    let dir = cached_clips(&signed_in_host(&app)?);
+    if let Some(p) = existing_file(&dir, start, end) {
+        // The cache trims least recently watched first.
+        let _ = std::fs::File::options().write(true).open(&p).and_then(|f| f.set_modified(std::time::SystemTime::now()));
+        return Ok(json!({ "path": p, "ready": true }));
+    }
+    let key = clip_key(start, end);
+    // One view at a time.
+    let mut stop_running = false;
+    for d in app.downloads.lock().unwrap().iter_mut().filter(|d| d.kind == "view" && d.key != key) {
+        match d.state.as_str() {
+            "queued" => d.state = "cancelled".into(),
+            "downloading" => stop_running = true,
+            _ => {}
+        }
+    }
+    if stop_running {
+        app.helper.send("cancel");
+    }
+    let item = enqueue(&handle, &app, "view", start, end, dir.join(format!("{}.ts", clip_base(start, end))));
+    Ok(json!({ "path": item.path, "ready": false }))
+}
+
+#[tauri::command]
+fn cache_size() -> u64 {
+    runtime::dir_size(&runtime::cache_dir())
+}
+
+/// Empty the cache; a file in use stays until the next start.
+#[tauri::command]
+fn clear_cache() -> u64 {
+    runtime::clear_dir(&runtime::cache_dir());
+    runtime::dir_size(&runtime::cache_dir())
 }
 
 #[tauri::command]
@@ -626,7 +718,7 @@ fn cancel_download(handle: AppHandle, app: State<App>, key: String) {
     let mut running = false;
     {
         let mut list = app.downloads.lock().unwrap();
-        if let Some(d) = list.iter_mut().find(|d| d.key == key) {
+        if let Some(d) = list.iter_mut().find(|d| d.key == key && d.kind == "save") {
             match d.state.as_str() {
                 "queued" => d.state = "cancelled".into(),
                 "downloading" => running = true,
@@ -663,16 +755,15 @@ async fn download_worker(handle: AppHandle) {
             })
         };
         let Some(job) = next else {
+            resume_live(&handle);
             handle.state::<App>().wake.notified().await;
             continue;
         };
+        pause_live(&handle);
         emit_downloads(&handle);
 
-        let result = handle
-            .state::<App>()
-            .helper
-            .call("download", json!({ "start": job.start, "end": job.end, "path": job.path }), LONG)
-            .await;
+        let result = fetch(&handle, &job).await;
+        let failed = result.is_err();
         {
             let app = handle.state::<App>();
             let mut list = app.downloads.lock().unwrap();
@@ -691,7 +782,75 @@ async fn download_worker(handle: AppHandle) {
                 }
             }
         }
+        if failed {
+            discard_partial(&handle, &job.path);
+        } else if job.kind == "view" {
+            runtime::trim_cache(CACHE_LIMIT, false);
+        }
         emit_downloads(&handle);
+    }
+}
+
+/// Saving a watched clip copies it from the cache.
+async fn fetch(handle: &AppHandle, job: &Download) -> Res<Value> {
+    let app = handle.state::<App>();
+    if job.kind == "save" {
+        if let Some(cached) = signed_in_host(&app).ok().and_then(|h| existing_file(&cached_clips(&h), job.start, job.end)) {
+            let dest = job.path.clone();
+            return tauri::async_runtime::spawn_blocking(move || std::fs::copy(cached, &dest))
+                .await
+                .map_err(|e| err("ERR_DOWNLOAD_FAILED", e.to_string()))?
+                .map(|bytes| json!({ "bytes": bytes }))
+                .map_err(|e| err("ERR_STORAGE_PERM", e.to_string()));
+        }
+    }
+    app.helper
+        .call("download", json!({ "start": job.start, "end": job.end, "path": job.path }), LONG)
+        .await
+}
+
+/// The camera is too slow to serve live view and a download at once.
+fn pause_live(handle: &AppHandle) {
+    let app = handle.state::<App>();
+    let mut media = app.media.lock().unwrap();
+    if *media == Media::Live {
+        if let Ok(p) = player(&app) {
+            let _ = p.command(&["stop"]);
+        }
+        *media = Media::None;
+        *app.live_paused.lock().unwrap() = true;
+    }
+}
+
+fn resume_live(handle: &AppHandle) {
+    let app = handle.state::<App>();
+    if std::mem::take(&mut *app.live_paused.lock().unwrap()) && *app.media.lock().unwrap() == Media::None {
+        let quality = config::get_str(&config::load(), "live_stream_quality");
+        if let Err(e) = load_live(&app, &quality) {
+            applog::write(&format!("could not resume live view: {} {}", e.code, e.message));
+        }
+    }
+}
+
+/// Delete an unfinished download, stopping its playback first.
+fn discard_partial(handle: &AppHandle, path: &str) {
+    let app = handle.state::<App>();
+    let mut media = app.media.lock().unwrap();
+    if *media == Media::Clip(path.to_string()) {
+        if let Ok(p) = player(&app) {
+            let _ = p.command(&["stop"]);
+        }
+        *media = Media::None;
+    }
+    drop(media);
+    let path = Path::new(path);
+    // mpv may still hold the file; a leftover keeps its .part marker.
+    for _ in 0..10 {
+        if std::fs::remove_file(path).is_ok() || !path.exists() {
+            let _ = std::fs::remove_file(part_marker(path));
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(100));
     }
 }
 
@@ -821,8 +980,21 @@ fn main() {
     let migration = runtime::migrate_from_tapo_viewer();
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        // The page shows the window itself; fullscreen is not restored.
+        .plugin(
+            tauri_plugin_window_state::Builder::default()
+                .with_state_flags(StateFlags::all() - StateFlags::VISIBLE - StateFlags::FULLSCREEN)
+                .build(),
+        )
         .setup(move |app| {
             let handle = app.handle().clone();
+            // Maximized until a window state has been saved.
+            let saved = app.path().app_config_dir().map(|d| d.join(tauri_plugin_window_state::DEFAULT_FILENAME).exists());
+            if !saved.unwrap_or(false) {
+                if let Some(w) = app.get_webview_window("main") {
+                    let _ = w.maximize();
+                }
+            }
             let h2 = handle.clone();
             let helper = Helper::new(
                 Arc::new(move |ev| on_helper_event(&h2, ev)),
@@ -836,6 +1008,7 @@ fn main() {
                 player_error: Mutex::new(None),
                 host_hwnd: Mutex::new(None),
                 media: Mutex::new(Media::None),
+                live_paused: Mutex::new(false),
                 downloads: Mutex::new(Vec::new()),
                 wake: tokio::sync::Notify::new(),
             });
@@ -847,6 +1020,8 @@ fn main() {
             let h3 = handle.clone();
             std::thread::spawn(move || {
                 runtime::prune_old_runtimes();
+                runtime::prune_old_thumbs();
+                runtime::trim_cache(CACHE_LIMIT, true);
                 if let Err(e) = runtime::libmpv() {
                     applog::write(&format!("could not unpack libmpv: {e}"));
                 }
@@ -857,7 +1032,7 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             app_info, settings_get, settings_set, set_output_dir, saved_login, connect, disconnect,
-            recording_dates, list_recordings, set_video_rect, set_video_visible, start_live,
+            recording_dates, list_recordings, clip_thumbnails, view_clip, cache_size, clear_cache, set_video_rect, set_video_visible, start_live,
             play_file, player_control, player_status, queue_download, cancel_download, downloads,
             clear_finished_downloads, open_path, reveal_path, output_dir, open_link, check_update,
             user_locales, open_locales_folder, log_line, test_camera, take_screenshot, open_external, ptz_info, ptz_move, ptz_goto

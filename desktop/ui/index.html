@@ -203,12 +203,14 @@
       <section class="clips" aria-labelledby="clipsTitle">
         <div class="panel-head">
           <h2 id="clipsTitle"></h2>
-          <div class="segmented segmented--small" role="radiogroup" data-i18n-attr="aria-label:clips.filter" id="clipFilter">
-            <button type="button" role="radio" aria-checked="true" data-filter="all" data-i18n="clips.all">All</button>
-            <button type="button" role="radio" aria-checked="false" data-filter="motion" data-i18n="clips.motion">Motion</button>
-          </div>
+          <button type="button" class="icon-btn sort-btn" id="btnSort" aria-pressed="true" data-i18n-attr="aria-label:clips.newestFirst">
+            <svg viewBox="0 0 20 20" width="20" height="20" aria-hidden="true"><path d="M5 3h2v10.2l2.3-2.3 1.4 1.4L6 17 1.3 12.3l1.4-1.4L5 13.2zM12 4h7v2h-7zM12 9h5v2h-5zM12 14h3v2h-3z"/></svg>
+          </button>
         </div>
-        <p class="clips-count muted" id="clipsCount"></p>
+        <div class="clips-bar">
+          <p class="clips-count muted" id="clipsCount"></p>
+          <div class="segmented segmented--small" role="radiogroup" data-i18n-attr="aria-label:clips.filter" id="clipFilter"></div>
+        </div>
         <ul class="board" id="clipList"></ul>
         <div class="panel-state" id="clipsState" hidden>
           <p id="clipsStateText"></p>
@@ -277,6 +279,15 @@
         <div class="row">
           <button type="button" class="btn btn--outline" id="btnChangeFolder2" data-i18n="downloads.changeFolder">Change folder</button>
           <button type="button" class="btn btn--quiet" id="btnOpenFolder2" data-i18n="downloads.openFolder">Open folder</button>
+        </div>
+      </section>
+
+      <section class="setting" aria-labelledby="sCache">
+        <h2 id="sCache" data-i18n="settings.cache">Cache</h2>
+        <p class="hint" data-i18n="settings.cacheHint">Recordings you watched and detection images, so they open again without asking the camera. Kept under 1 GB; the oldest go first.</p>
+        <div class="row">
+          <p id="cacheSize" class="num" role="status"></p>
+          <button type="button" class="btn btn--outline" id="btnClearCache" data-i18n="settings.clearCache">Clear cache</button>
         </div>
       </section>
 

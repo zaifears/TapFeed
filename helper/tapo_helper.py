@@ -15,6 +15,7 @@ Passwords arrive over stdin only and are never written anywhere.
 from __future__ import annotations
 
 import asyncio
+import base64
 import datetime
 import json
 import os
@@ -34,10 +35,12 @@ for stream in (sys.stdin, _PROTOCOL_OUT, sys.stderr):
         pass
 
 from pytapo import Tapo  # noqa: E402
-from pytapo.media_stream.downloader import Downloader  # noqa: E402
+from pytapo.media_stream._utils import StreamType  # noqa: E402
+from pytapo.media_stream.snapshot import getRecordingSnapshots  # noqa: E402
 from pytapo.version import PYTAPO_VERSION  # noqa: E402
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from tswriter import TsWriter  # noqa: E402
 from errors import (  # noqa: E402
     CTX_CONNECT,
     CTX_DOWNLOAD,
@@ -83,6 +86,57 @@ def _login_plan(username: str, password: str, cloud: str, prefer: str) -> List[D
         return [admin, camera]
     # Documented pytapo method first when a separate cloud password was given.
     return [admin, camera] if cloud else [camera, admin]
+
+
+THUMBS_PER_CALL = 8
+# a clip without an image gets no answer, only this timeout
+THUMB_TIMEOUT = 4
+FRESH_SECONDS = 60
+STALL_SECONDS = 120
+BUSY_CODES = (-52405, -52407, -52417, -52435)
+
+
+def _stream_request(tapo: Tapo, method: str, start: int, end: int) -> Dict[str, Any]:
+    if method == "download":
+        params = {"download": {"client_id": tapo.getUserID(), "channels": [0], "media_type": 0,
+                               "start_time": str(start), "end_time": str(end), "player_id": tapo.playerID}}
+    else:
+        params = {"playback": {"client_id": tapo.getUserID(), "channels": [0, 1], "scale": "1/1",
+                               "start_time": str(start), "end_time": str(end), "event_type": [1, 2]}}
+    return {"type": "request", "seq": 1, "params": {**params, "method": "get"}}
+
+
+def _data_url(jpeg: bytes) -> str:
+    return "data:image/jpeg;base64," + base64.b64encode(jpeg).decode()
+
+
+def _event_types(event: Dict[str, Any]) -> List[int]:
+    """Main type (alarm_type) first, then the rest of the events_1 bitmask (bit n-1 = type n)."""
+    main = int(event.get("alarm_type") or 0)
+    # shortcut: events_2 (types 33-64) assumed by analogy, never seen sent
+    mask = int(event.get("events_1") or 0) | int(event.get("events_2") or 0) << 32
+    seen = [n for n in range(1, 65) if mask >> (n - 1) & 1]
+    return ([main] if main else []) + [n for n in seen if n != main]
+
+
+def _label_clips(clips: List[Dict[str, Any]], events: List[Dict[str, Any]], correction: int) -> None:
+    """Each clip takes the types of the event overlapping it most."""
+    for c in clips:
+        best, overlap = None, 0
+        for e in events:
+            # pytapo adds the clock correction to event times, not to recordings
+            s, t = int(e.get("start_time", 0)) - correction, int(e.get("end_time", 0)) - correction
+            o = min(t, c["end"]) - max(s, c["start"])
+            if o > overlap:
+                best, overlap = e, o
+        if best is not None:
+            c["types"] = [n for n in _event_types(best) if n != 1]
+
+
+def _selfcheck_labels() -> None:
+    clips = [{"start": 100, "end": 200, "types": []}, {"start": 300, "end": 330, "types": []}]
+    _label_clips(clips, [{"start_time": 103, "end_time": 203, "alarm_type": 6, "events_1": 162}], 3)
+    assert clips[0]["types"] == [6, 2, 8] and clips[1]["types"] == [], clips
 
 
 class Session:
@@ -192,68 +246,120 @@ class Session:
             if start <= 0 or end <= start:
                 continue
             kind = str(data.get("vedio_type") or data.get("video_type") or data.get("type") or "1")
-            clips.append({"start": start, "end": end, "motion": kind != "1"})
+            clips.append({"start": start, "end": end, "motion": kind != "1", "types": []})
         clips.sort(key=lambda c: c["start"])
+        if clips:
+            try:
+                events = tapo.getEvents(clips[0]["start"] - 60, clips[-1]["end"] + 60)
+            except Exception as exc:  # noqa: BLE001 - older firmware has no detection list
+                print(f"detection list unavailable: {exc}", file=sys.stderr)
+                events = []
+            _label_clips(clips, events, self.time_correction)
         return clips
+
+    def thumbnails(self, req: Dict[str, Any]) -> Dict[str, Optional[str]]:
+        """Data URLs of the camera's detection images, cached as <dir>/<start>.jpg."""
+        tapo = self._need()
+        folder = str(req["dir"])
+        os.makedirs(folder, exist_ok=True)
+        out: Dict[str, Optional[str]] = {}
+        missing: List[int] = []
+        for start in [int(s) for s in req.get("starts", [])][:THUMBS_PER_CALL]:
+            path = os.path.join(folder, f"{start}.jpg")
+            if os.path.exists(path):
+                with open(path, "rb") as f:
+                    out[str(start)] = _data_url(f.read())
+            else:
+                missing.append(start)
+        if missing:
+            tapo.getUserID()  # may log in with an event loop of its own: cache it before ours
+
+            async def fetch() -> None:
+                images = getRecordingSnapshots(tapo, missing, timeout=THUMB_TIMEOUT)
+                for start, image in zip(missing, [i async for i in images]):
+                    out[str(start)] = _data_url(image) if image else None
+                    if image:
+                        with open(os.path.join(folder, f"{start}.jpg"), "wb") as f:
+                            f.write(image)
+
+            try:
+                asyncio.run(fetch())
+            except Exception as exc:  # noqa: BLE001 - camera busy: asked again later
+                print(f"thumbnails unavailable: {exc}", file=sys.stderr)
+        return out
 
     def download(self, req: Dict[str, Any], progress: Callable[[Dict[str, Any]], None]) -> Dict[str, Any]:
         tapo = self._need()
         start, end = int(req["start"]), int(req["end"])
         path = os.path.abspath(str(req["path"]))
-        folder, name = os.path.split(path)
-        os.makedirs(folder, exist_ok=True)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        if time.time() - FRESH_SECONDS - self.time_correction < end:
+            raise HelperError("ERR_DOWNLOAD_EMPTY", "The recording is still in progress.")
         if not self.busy.acquire(blocking=False):
             raise HelperError("ERR_CAMERA_BUSY", "Another download is already running.")
         self.cancel.clear()
         try:
-            loop = asyncio.new_event_loop()
-            try:
-                loop.run_until_complete(self._download(tapo, start, end, folder, name, progress))
-            finally:
-                loop.close()
+            # .part marks it unfinished; the app deletes both files on failure
+            open(path + ".part", "wb").close()
+            with open(path, "wb") as out:
+                # getUserID() may log in with an event loop of its own, so not inside ours
+                requests = [_stream_request(tapo, m, start, end) for m in ("download", "playback")]
+                asyncio.run(self._download(tapo, requests, end - start, TsWriter(out), progress))
         finally:
             self.busy.release()
 
         if self.cancel.is_set():
-            try:
-                os.remove(path)
-            except OSError:
-                pass
             raise HelperError("ERR_DOWNLOAD_CANCELLED", "Download cancelled.")
-        if not os.path.exists(path) or os.path.getsize(path) <= 1024:
-            raise HelperError("ERR_DOWNLOAD_EMPTY", f"The camera sent no video for this clip ({name}).")
+        if os.path.getsize(path) <= 1024:
+            raise HelperError("ERR_DOWNLOAD_EMPTY", f"The camera sent no video for this clip ({os.path.basename(path)}).")
+        os.remove(path + ".part")
         return {"path": path, "bytes": os.path.getsize(path)}
 
-    async def _download(self, tapo, start, end, folder, name, progress) -> None:
-        downloader = Downloader(
-            tapo=tapo,
-            startTime=start,
-            endTime=end,
-            timeCorrection=self.time_correction,
-            outputDirectory=folder + os.sep,
-            fileName=name,
-            output="ts",
-            method="download",
-            window_size=200,
-        )
-        stream = downloader.download()
-        try:
-            async for status in stream:
-                if self.cancel.is_set():
-                    break
-                action = status.get("currentAction", "Downloading")
-                if action == "Camera busy":
-                    raise HelperError(
-                        "ERR_CAMERA_BUSY",
-                        f"Camera busy (code {status.get('errorCode')}).",
-                    )
-                progress({
-                    "action": action,
-                    "progress": status.get("progress") or 0,
-                    "total": status.get("total") or (end - start),
-                })
-        finally:
-            await stream.aclose()
+    async def _download(self, tapo, requests, total, writer, progress) -> None:
+        for req in requests:
+            method = next(iter(req["params"]))
+            last_report = 0.0
+            session = tapo.getMediaSession(StreamType.Download)
+            session.set_window_size(200)
+            async with session:
+                stream = session.transceive(json.dumps(req))
+                try:
+                    while not self.cancel.is_set():
+                        try:
+                            resp = await asyncio.wait_for(stream.__anext__(), timeout=STALL_SECONDS)
+                        except StopAsyncIteration:
+                            return
+                        except asyncio.TimeoutError:
+                            raise HelperError("ERR_CAMERA_TIMEOUT", "The camera stopped sending the recording.")
+                        if resp.mimetype == "video/mp2t":
+                            done = writer.feed(resp.plaintext)
+                            now = time.monotonic()
+                            if now - last_report >= 0.5:
+                                last_report = now
+                                progress({"action": "Downloading", "progress": min(done, total), "total": total})
+                            # playback runs at 1x and past end_time; download stops by itself
+                            if method == "playback" and done >= total:
+                                return
+                        elif resp.mimetype == "application/json":
+                            try:
+                                msg = json.loads(resp.plaintext.decode())
+                            except ValueError:
+                                continue
+                            params = msg.get("params") or {}
+                            code = params.get("error_code")
+                            if msg.get("type") == "response" and code in BUSY_CODES:
+                                raise HelperError("ERR_CAMERA_BUSY", f"Camera busy (code {code}).")
+                            if msg.get("type") == "response" and code not in (0, None):
+                                if method == "download" and writer.out.tell() == 0:
+                                    break  # older firmware: no download request, use playback
+                                raise HelperError("ERR_DOWNLOAD_FAILED", f"Camera refused the recording (code {code}).")
+                            if params.get("event_type") == "stream_status" and params.get("status") == "finished":
+                                return
+                    else:
+                        return
+                finally:
+                    await stream.aclose()
+
 
     # -- pan / tilt -----------------------------------------------------------
     # Only offered when the camera reports a motor. Moves are small relative
@@ -382,6 +488,8 @@ def main() -> None:
                 result = session.recording_dates(req)
             elif cmd == "list_recordings":
                 result = session.list_recordings(req)
+            elif cmd == "thumbnails":
+                result = session.thumbnails(req)
             elif cmd == "download":
                 result = session.download(
                     req, lambda p: send({"event": "download_progress", "id": req_id, **p})

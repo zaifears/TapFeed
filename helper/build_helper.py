@@ -7,6 +7,7 @@ Run with the project's .venv:  .venv\Scripts\python.exe helper\build_helper.py
 import shutil
 import subprocess
 import sys
+import sysconfig
 import zipfile
 from pathlib import Path
 
@@ -16,7 +17,18 @@ DIST = WORK / "dist" / "tapo-helper"
 OUT = ROOT / "vendor" / "helper" / "tapo-helper.zip"
 
 
+def up_to_date() -> bool:
+    """Zip newer than the helper sources and site-packages (pip touches the folder)."""
+    if not OUT.exists() or "--force" in sys.argv:
+        return False
+    inputs = [*(ROOT / "helper").glob("*.py"), Path(sysconfig.get_paths()["purelib"])]
+    return all(p.stat().st_mtime < OUT.stat().st_mtime for p in inputs)
+
+
 def main() -> None:
+    if up_to_date():
+        print(f"{OUT} is up to date (use --force to rebuild)")
+        return
     shutil.rmtree(WORK, ignore_errors=True)
     subprocess.run(
         [

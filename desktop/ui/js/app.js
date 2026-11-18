@@ -30,6 +30,8 @@ const state = {
   seeking: false,
   dialogOpen: false,
   problems: [],
+  // clip start -> data URL, null if the camera has none
+  thumbs: new Map(),
 };
 
 // ---------------------------------------------------------------- helpers
@@ -365,6 +367,7 @@ $("btnSignOut").addEventListener("click", async () => {
   state.device = null;
   state.clips = [];
   state.dates = new Set();
+  state.thumbs.clear();
   showShell(false);
   await fillSavedLogin();
   setView("login");
@@ -506,12 +509,23 @@ $("btnBack10").addEventListener("click", () => invoke("player_control", { action
 $("btnFwd10").addEventListener("click", () => invoke("player_control", { action: "seek", value: "10" }).catch(() => {}));
 $("btnMute").addEventListener("click", () => invoke("player_control", { action: "mute" }).catch(() => {}));
 $("volume").addEventListener("input", (e) => invoke("player_control", { action: "volume", value: e.target.value }).catch(() => {}));
-$("seek").addEventListener("input", () => (state.seeking = true));
+$("seek").addEventListener("input", (e) => {
+  state.seeking = true;
+  // mpv cannot seek past what is on disk yet.
+  const part = downloadedPart(state.status);
+  const max = Math.max(0, Math.floor(part * 1000) - 20);
+  if (part < 1 && e.target.value > max) e.target.value = max;
+});
 $("seek").addEventListener("change", (e) => {
-  const d = state.status.duration || 0;
+  const d = clipLength(state.status);
   invoke("player_control", { action: "seek_to", value: String((e.target.value / 1000) * d) }).catch(() => {});
   state.seeking = false;
 });
+
+function downloadedPart(st) {
+  const d = state.downloads.find((x) => x.path === st.path && x.state === "downloading");
+  return d ? d.progress : 1;
+}
 
 async function setFullscreen(on) {
   await appWindow.setFullscreen(on).catch(() => {});
@@ -547,10 +561,27 @@ window.addEventListener("keydown", (e) => {
 });
 $("video").addEventListener("dblclick", () => setFullscreen(!document.body.classList.contains("is-fullscreen")));
 
+function playingClip(st) {
+  if (st.mode !== "clip" || !st.path) return null;
+  return state.clips.find((x) => x.file === st.path || x.cache === st.path) || state.downloads.find((d) => d.path === st.path) || null;
+}
+
+// A growing file has no final length yet.
+function clipLength(st) {
+  const c = playingClip(st);
+  return c ? c.end - c.start : st.duration || 0;
+}
+
+let playingPath = null;
 function renderPlayer(st) {
   const controls = $("controls");
   const live = st.mode === "live";
   const clip = st.mode === "clip";
+  const path = clip ? st.path : null;
+  if (path !== playingPath) {
+    playingPath = path;
+    if (state.view === "camera") renderClips();
+  }
   controls.classList.toggle("is-clip", clip);
   controls.classList.toggle("is-paused", !!st.paused || st.mode === "none");
   controls.classList.toggle("is-muted", !!st.muted);
@@ -570,13 +601,14 @@ function renderPlayer(st) {
   const tip = $("clipTip");
   if (tip.hidden === clip) {
     tip.hidden = !clip;
+    $("quality").hidden = clip;
     lastRect = "";
     requestAnimationFrame(syncRect);
   }
   renderPtz();
   $("btnSnapshot").disabled = !st.ready || st.mode === "none" || st.state !== "playing";
   if (clip && st.path) {
-    const c = state.clips.find((x) => x.file === st.path) || state.downloads.find((d) => d.path === st.path);
+    const c = playingClip(st);
     $("playerTitle").textContent = c
       ? t("camera.clipTitle", { date: fmtDay(new Date(c.start * 1000), { day: "numeric", month: "short" }), time: fmtClock(c.start) })
       : fileName(st.path);
@@ -585,8 +617,11 @@ function renderPlayer(st) {
   }
 
   $("timeNow").textContent = live ? "" : fmtLen(st.position);
-  $("timeTotal").textContent = fmtLen(st.duration);
-  if (clip && !state.seeking && st.duration) $("seek").value = Math.round(((st.position || 0) / st.duration) * 1000);
+  const length = clipLength(st);
+  $("timeTotal").textContent = fmtLen(length);
+  if (clip && !state.seeking && length) $("seek").value = Math.round(((st.position || 0) / length) * 1000);
+  $("seek").style.setProperty("--played", `${$("seek").value / 10}%`);
+  $("seek").style.setProperty("--loaded", `${downloadedPart(st) * 100}%`);
 
   // Message shown in the video box whenever the picture is not
   const msg = $("videoMsgText");
@@ -610,7 +645,7 @@ function renderPlayer(st) {
     detail.hidden = false;
     btn.textContent = t("camera.retry");
   } else if (st.mode === "none") {
-    msg.textContent = t("camera.stopped");
+    msg.textContent = t(st.livePaused ? "camera.livePaused" : "camera.stopped");
   } else if (st.state !== "playing") {
     msg.textContent = t("camera.opening");
     btn.hidden = true;
@@ -771,21 +806,163 @@ function setClipsState(text, hint, isError) {
 }
 $("btnClipsRetry").addEventListener("click", loadClips);
 
-document.querySelectorAll("#clipFilter [data-filter]").forEach((b) =>
-  b.addEventListener("click", () => {
-    state.filter = b.dataset.filter;
-    document.querySelectorAll("#clipFilter [data-filter]").forEach((x) => x.setAttribute("aria-checked", String(x === b)));
-    renderClips();
-  }),
-);
+state.newestFirst = localStorage.getItem("clipsNewestFirst") !== "false";
+$("btnSort").addEventListener("click", () => {
+  state.newestFirst = !state.newestFirst;
+  localStorage.setItem("clipsNewestFirst", String(state.newestFirst));
+  renderClips();
+});
 
-function clipDownload(c) {
-  return state.downloads.filter((d) => d.key === c.key).pop() || null;
+const isActive = (d) => d.state === "queued" || d.state === "downloading";
+const saves = () => state.downloads.filter((d) => d.kind === "save");
+
+function clipSave(c) {
+  return saves().filter((d) => d.key === c.key).pop() || null;
+}
+
+function clipJob(c) {
+  return state.downloads.find((d) => d.key === c.key && isActive(d)) || null;
+}
+
+const PAW = '<circle cx="5" cy="8" r="2"/><circle cx="9" cy="5" r="2"/><circle cx="13" cy="5" r="2"/><circle cx="16" cy="9" r="2"/><path d="M10.5 9c-3 0-5.5 4.5-5.5 6.5C5 17 6.5 17.5 8 17s1.5-.5 2.5-.5 1.5.5 2.5.5 3-.5 3-2c0-2-2.5-6-5.5-6z"/>';
+const ICONS = {
+  2: '<circle cx="12.5" cy="3.5" r="2"/><path d="M6 9l3-2.5h3.5l2 3 2.5.5M11.5 6.5L9.5 12l-4 1.5-2 3.5M9.5 12l3 2.5-.5 4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>',
+  6: '<circle cx="10" cy="5" r="3"/><path d="M4 18c0-4 2.6-7 6-7s6 3 6 7z"/>',
+  8: '<path d="M5.5 5h9l2 5H18a1 1 0 011 1v4h-2a2 2 0 01-4 0H7a2 2 0 01-4 0H1v-4a1 1 0 011-1h1.5zm1.3 2l-1 3h8.4l-1-3z"/>',
+  9: PAW,
+  33: PAW,
+};
+const OTHER_ICON = '<circle cx="10" cy="10" r="4"/>';
+const DOWNLOAD_ICON = '<path d="M9 3h2v8l3-3 1.4 1.4L10 14.8 4.6 9.4 6 8l3 3zM4 16h12v2H4z"/>';
+const CHECK_ICON = '<path d="M8 13.2l-3.6-3.6L3 11l5 5 9-9-1.4-1.4z"/>';
+const svg = (paths) => {
+  const s = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  s.setAttribute("viewBox", "0 0 20 20");
+  s.setAttribute("aria-hidden", "true");
+  s.innerHTML = paths;
+  return s;
+};
+
+function typeName(n) {
+  const name = t(`clips.types.${n}`);
+  return name === `clips.types.${n}` ? t("clips.detection") : name;
+}
+
+const clipTypes = (c) => (c.types || []).filter((n) => n !== 1);
+
+function clipKind(c) {
+  const types = clipTypes(c);
+  if (!types.length) return t(c.motion ? "clips.motion" : "clips.continuous");
+  return [...new Set(types.map(typeName))].join(", ");
+}
+
+// Motion is left out: every detection has it.
+function renderFilter() {
+  const counts = new Map();
+  for (const c of state.clips) for (const n of new Set(clipTypes(c))) counts.set(n, (counts.get(n) || 0) + 1);
+  counts.delete(2);
+  const typed = state.clips.some((c) => clipTypes(c).length);
+  const options = [["all", t("clips.all")]];
+  for (const [n, count] of [...counts].sort((a, b) => a[0] - b[0])) options.push([String(n), `${typeName(n)} ${count}`]);
+  // Cameras without a detection list.
+  if (!typed && state.clips.some((c) => c.motion) && state.clips.some((c) => !c.motion)) options.push(["motion", t("clips.motion")]);
+  if (!options.some(([v]) => v === state.filter)) state.filter = "all";
+  $("clipFilter").replaceChildren(...options.map(([value, label]) => {
+    const b = el("button", null, label);
+    b.type = "button";
+    b.setAttribute("role", "radio");
+    b.setAttribute("aria-checked", String(value === state.filter));
+    b.addEventListener("click", () => {
+      state.filter = value;
+      renderClips();
+    });
+    return b;
+  }));
+  $("clipFilter").hidden = options.length < 2;
+}
+
+function clipShown(c) {
+  if (state.filter === "all") return true;
+  if (state.filter === "motion") return c.motion;
+  return clipTypes(c).includes(Number(state.filter));
+}
+
+// ---------------------------------------------------------------- thumbnails
+// Only for clips in view, a few per call.
+const thumbWanted = new Set();
+let thumbBusy = false;
+const thumbObserver = new IntersectionObserver((entries) => {
+  for (const e of entries) {
+    if (!e.isIntersecting) continue;
+    thumbWanted.add(Number(e.target.dataset.start));
+    thumbObserver.unobserve(e.target);
+  }
+  loadThumbs();
+}, { root: $("clipList"), rootMargin: "200px" });
+
+async function loadThumbs() {
+  // The camera serves one recording stream at a time.
+  const downloading = state.downloads.some((d) => d.state === "downloading");
+  if (thumbBusy || !thumbWanted.size || !state.connected || downloading) return;
+  thumbBusy = true;
+  const starts = [...thumbWanted].slice(0, 8);
+  starts.forEach((s) => thumbWanted.delete(s));
+  try {
+    const got = await invoke("clip_thumbnails", { starts });
+    for (const s of starts) {
+      // Missing key: camera busy, asked again on the next render.
+      if (!(s in got)) continue;
+      state.thumbs.set(s, got[s]);
+      document.querySelectorAll(`img.clip-img[data-start="${s}"]`).forEach((img) => {
+        if (got[s]) img.src = got[s];
+      });
+    }
+  } catch (e) {
+    const err = asError(e);
+    invoke("log_line", { line: `thumbnails failed: ${err.code} ${err.message}` }).catch(() => {});
+  } finally {
+    thumbBusy = false;
+  }
+  loadThumbs();
+}
+
+function clipThumb(c, dl) {
+  const box = el("span", "clip-thumb");
+  // The camera keeps an image only for detection recordings.
+  if (c.motion) {
+    const img = el("img", "clip-img");
+    img.alt = "";
+    img.dataset.start = c.start;
+    const url = state.thumbs.get(c.start);
+    if (url) img.src = url;
+    else if (url === undefined) thumbObserver.observe(img);
+    box.append(img);
+  }
+  box.append(el("span", "clip-len num", fmtLen(c.end - c.start)));
+  if (c.file) {
+    const done = el("span", "clip-done");
+    done.title = t("clips.downloaded");
+    done.append(svg(CHECK_ICON));
+    box.append(done);
+  } else if (dl) {
+    const bar = el("span", "clip-progress");
+    bar.style.setProperty("--p", String(dl.progress || 0));
+    box.append(bar);
+  }
+  return box;
 }
 
 function renderClips() {
+  thumbObserver.disconnect();
+  renderFilter();
+  const sort = $("btnSort");
+  sort.setAttribute("aria-pressed", String(state.newestFirst));
+  sort.classList.toggle("is-reversed", !state.newestFirst);
+  sort.title = t(state.newestFirst ? "clips.newestFirst" : "clips.oldestFirst");
+
   const list = $("clipList");
-  const shown = state.clips.filter((c) => state.filter === "all" || c.motion);
+  const shown = state.clips.filter(clipShown);
+  if (state.newestFirst) shown.reverse();
   const n = state.clips.length;
   $("clipsCount").textContent = n ? (n === 1 ? t("clips.countOne") : t("clips.count", { n })) : "";
   if (!n) setClipsState(t("clips.empty"), t("clips.emptyHint"));
@@ -796,40 +973,46 @@ function renderClips() {
   list.replaceChildren(
     ...shown.map((c) => {
       const li = el("li", "clip");
-      if (current && c.file === current) li.classList.add("is-current");
+      const dl = clipSave(c);
+      const job = clipJob(c);
+      if (current && [c.file, c.cache, job?.path].includes(current)) li.classList.add("is-current");
       const start = fmtClock(c.start);
-      li.append(el("span", "clip-time", start));
+      const length = fmtLen(c.end - c.start);
 
-      const meta = el("div", "clip-meta");
-      meta.append(
-        el("span", `kind${c.motion ? " kind--motion" : ""}`, t(c.motion ? "clips.motion" : "clips.continuous")),
-        el("span", "num", t("clips.until", { time: fmtClock(c.end), length: fmtLen(c.end - c.start) })),
-      );
-      li.append(meta);
+      const main = el("button", "clip-main");
+      main.type = "button";
+      main.title = t("clips.until", { time: fmtClock(c.end), length });
+      main.setAttribute("aria-label", `${t("clips.playClip", { time: start })}, ${clipKind(c)}, ${length}`);
+      main.addEventListener("click", () => playClip(c));
+      const icons = el("span", "clip-icons");
+      const types = clipTypes(c);
+      for (const n of types) {
+        const i = el("span", n === 2 ? "clip-icon clip-icon--motion" : "clip-icon");
+        i.title = typeName(n);
+        i.append(svg(ICONS[n] || OTHER_ICON));
+        icons.append(i);
+      }
+      if (!types.length) icons.append(el("span", "clip-kind", clipKind(c)));
+      const info = el("span", "clip-info");
+      info.append(el("span", "clip-time", start), icons);
+      main.append(clipThumb(c, job), info);
 
       const actions = el("div", "clip-actions");
-      const dl = clipDownload(c);
-      const busy = dl && (dl.state === "queued" || dl.state === "downloading");
+      const busy = dl && isActive(dl);
       if (busy) {
         actions.append(el("span", "clip-state num", dl.state === "queued" ? t("clips.queued") : t("clips.downloading", { percent: Math.round(dl.progress * 100) })));
-      } else if (dl && dl.state === "failed") {
-        actions.append(el("span", "clip-state clip-state--failed", t("clips.failed")));
-      } else if (c.file) {
-        actions.append(el("span", "clip-state clip-state--done", t("clips.downloaded")));
-      }
-      const play = el("button", "btn btn--outline", t("clips.play"));
-      play.type = "button";
-      play.setAttribute("aria-label", t("clips.playClip", { time: start }));
-      play.addEventListener("click", () => playClip(c));
-      actions.append(play);
-      if (!c.file && !busy) {
-        const get = el("button", "btn btn--quiet", t(dl && dl.state === "failed" ? "clips.retry" : "clips.download"));
+      } else if (!c.file) {
+        const failed = dl && dl.state === "failed";
+        const get = el("button", `icon-btn${failed ? " icon-btn--failed" : ""}`);
         get.type = "button";
-        get.setAttribute("aria-label", t("clips.downloadClip", { time: start }));
+        const label = failed ? `${t("clips.failed")}, ${t("clips.retry")}` : t("clips.downloadClip", { time: start });
+        get.setAttribute("aria-label", label);
+        get.title = failed ? label : t("clips.download");
+        get.append(svg(DOWNLOAD_ICON));
         get.addEventListener("click", () => queueDownload(c));
         actions.append(get);
       }
-      li.append(actions);
+      li.append(main, actions);
       return li;
     }),
   );
@@ -846,54 +1029,68 @@ async function queueDownload(c) {
 }
 
 async function playClip(c) {
-  if (c.file) {
-    try {
+  try {
+    if (c.file) {
       await invoke("play_file", { path: c.file });
-    } catch (e) {
-      const err = asError(e);
-      addProblem(err.code, err.message, "playback");
-      toast(errorText(err.code).title, "error");
+      return;
     }
-    return;
+    const v = await invoke("view_clip", { start: c.start, end: c.end });
+    if (v.ready) {
+      c.cache = v.path;
+      await invoke("play_file", { path: v.path });
+    } else {
+      state.pendingPlay = c.key;
+      toast(t("clips.downloadToPlay"));
+    }
+  } catch (e) {
+    const err = asError(e);
+    addProblem(err.code, err.message, "playback");
+    toast(errorText(err.code).title, "error");
   }
-  state.pendingPlay = c.key;
-  toast(t("clips.downloadToPlay"));
-  queueDownload(c);
 }
 
 // ---------------------------------------------------------------- downloads
 function onDownloads(list) {
-  const before = new Map(state.downloads.map((d) => [d.key, d.state]));
+  const id = (d) => `${d.kind}:${d.key}`;
+  const before = new Map(state.downloads.map((d) => [id(d), d.state]));
   state.downloads = list;
   for (const d of list) {
-    const was = before.get(d.key);
+    const watched = state.pendingPlay === d.key && d.kind === "view";
+    if (watched && d.state === "downloading" && d.progress > 0) {
+      state.pendingPlay = null;
+      invoke("play_file", { path: d.path, growing: true }).catch(() => {});
+    }
+    const was = before.get(id(d));
     if (was === d.state) continue;
     if (d.state === "done" && was) {
-      toast(t("downloads.finishedToast", { name: fileName(d.path) }));
       const c = state.clips.find((x) => x.key === d.key);
-      if (c) c.file = d.path;
-      if (state.pendingPlay === d.key) {
+      if (d.kind === "save") {
+        toast(t("downloads.finishedToast", { name: fileName(d.path) }));
+        if (c) c.file = d.path;
+      } else if (c) c.cache = d.path;
+      if (watched) {
         state.pendingPlay = null;
         invoke("play_file", { path: d.path }).catch(() => {});
       }
     } else if (d.state === "failed" && was) {
       addProblem(d.error?.code || "ERR_DOWNLOAD_FAILED", d.error?.message, "download");
       toast(errorText(d.error?.code || "ERR_DOWNLOAD_FAILED").title, "error");
-      if (state.pendingPlay === d.key) state.pendingPlay = null;
+      if (watched) state.pendingPlay = null;
     }
   }
-  const active = list.filter((d) => d.state === "queued" || d.state === "downloading").length;
+  const active = saves().filter(isActive).length;
   $("dlCount").hidden = active === 0;
   $("dlCount").textContent = active;
   if (state.view === "camera") renderClips();
   if (state.view === "downloads") renderDownloads();
+  loadThumbs();
 }
 
 async function renderDownloads() {
   const folder = await invoke("output_dir").catch(() => "");
   $("dlFolder").textContent = folder;
   const rows = $("dlRows");
-  const list = state.downloads.slice().reverse();
+  const list = saves().reverse();
   $("dlTable").hidden = list.length === 0;
   $("dlEmpty").hidden = list.length > 0;
   $("btnClearFinished").disabled = !list.some((d) => !["queued", "downloading"].includes(d.state));
@@ -997,7 +1194,20 @@ async function renderSettings() {
   sel.value = languageCode();
   $("sFolder").textContent = await invoke("output_dir").catch(() => "");
   $("checkUpdates").checked = cfg.check_updates !== false;
+  renderCacheSize(await invoke("cache_size").catch(() => 0));
 }
+
+function renderCacheSize(bytes) {
+  const mb = new Intl.NumberFormat(intlLocale(), { style: "unit", unit: "megabyte", maximumFractionDigits: 0 });
+  $("cacheSize").textContent = t("settings.cacheUsed", { size: mb.format(bytes / 1048576) });
+}
+
+$("btnClearCache").addEventListener("click", async () => {
+  renderCacheSize(await invoke("clear_cache").catch(() => 0));
+  state.thumbs.clear();
+  state.clips.forEach((c) => (c.cache = null));
+  if (state.connected) renderClips();
+});
 
 async function renderAbout() {
   const info = await invoke("app_info").catch(() => ({}));
