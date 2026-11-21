@@ -36,7 +36,7 @@ for stream in (sys.stdin, _PROTOCOL_OUT, sys.stderr):
 
 from pytapo import Tapo  # noqa: E402
 from pytapo.media_stream._utils import StreamType  # noqa: E402
-from pytapo.media_stream.snapshot import getRecordingSnapshots  # noqa: E402
+from pytapo.media_stream.talk import Talk  # noqa: E402
 from pytapo.version import PYTAPO_VERSION  # noqa: E402
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -88,9 +88,9 @@ def _login_plan(username: str, password: str, cloud: str, prefer: str) -> List[D
     return [admin, camera] if cloud else [camera, admin]
 
 
-THUMBS_PER_CALL = 8
+THUMBS_PER_CALL = 12
 # a clip without an image gets no answer, only this timeout
-THUMB_TIMEOUT = 4
+THUMB_TIMEOUT = 2.5
 FRESH_SECONDS = 60
 STALL_SECONDS = 120
 BUSY_CODES = (-52405, -52407, -52417, -52435)
@@ -171,7 +171,12 @@ class Session:
         self.tapo: Optional[Tapo] = None
         self.time_correction = 0
         self.ptz: Dict[str, Any] = {"pan_tilt": False, "presets": False}
+        self.two_way_audio = False
         self.motor_lock = threading.Lock()
+        self.talk_lock = threading.Lock()
+        self._talk_thread: Optional[threading.Thread] = None
+        self._talk_loop_ref: Optional[asyncio.AbstractEventLoop] = None
+        self._talk_queue: Optional[asyncio.Queue] = None
         # Cancel flag of the download the reader started last. Each download
         # gets its own, so starting one can never wipe a cancel meant for it.
         self.cancel = threading.Event()
@@ -214,6 +219,7 @@ class Session:
 
             self.tapo = tapo
             self.ptz = {"pan_tilt": False, "presets": False}
+            self.two_way_audio = self._detect_two_way_audio(tapo)
             try:
                 self.time_correction = int(tapo.getTimeCorrection() or 0)
             except Exception:
@@ -226,6 +232,7 @@ class Session:
                 "firmware": basic.get("sw_version") or "",
                 "mac": basic.get("mac") or "",
                 "time_correction": self.time_correction,
+                "two_way_audio": self.two_way_audio,
             }
 
         detail = "; ".join(failures) or str(last)
@@ -291,7 +298,9 @@ class Session:
         return clips
 
     def thumbnails(self, req: Dict[str, Any]) -> Dict[str, Optional[str]]:
-        """Data URLs of the camera's detection images, cached as <dir>/<start>.jpg."""
+        """Data URLs of the camera's detection images, cached as <dir>/<start>.jpg.
+        Emits each image via a 'thumbnail' event as soon as it is ready so the UI
+        never waits for an entire batch."""
         tapo = self._need()
         folder = str(req["dir"])
         os.makedirs(folder, exist_ok=True)
@@ -301,7 +310,9 @@ class Session:
             path = os.path.join(folder, f"{start}.jpg")
             if os.path.exists(path):
                 with open(path, "rb") as f:
-                    out[str(start)] = _data_url(f.read())
+                    url = _data_url(f.read())
+                out[str(start)] = url
+                send({"event": "thumbnail", "start": start, "url": url})
             else:
                 missing.append(start)
         # The camera serves one recording stream at a time and downloads come
@@ -309,25 +320,60 @@ class Session:
         if not missing or self.download_wanted.is_set() or not self.stream_lock.acquire(blocking=False):
             return out
         try:
-            tapo.getUserID()  # may log in with an event loop of its own: cache it before ours
+            uid = tapo.getUserID()  # may log in with an event loop of its own: cache it before ours
 
             async def fetch() -> None:
-                images = getRecordingSnapshots(tapo, missing, timeout=THUMB_TIMEOUT)
-                try:
-                    for start in missing:
-                        # A clip without an image costs THUMB_TIMEOUT; stop for a download.
+                session = tapo.getMediaSession(StreamType.Download)
+                session.set_window_size(50)
+                async with session:
+                    for seq, start in enumerate(missing, start=1):
                         if self.download_wanted.is_set():
                             print("thumbnails stopped for a download", file=sys.stderr)
                             return
-                        image = await images.__anext__()
-                        out[str(start)] = _data_url(image) if image else None
+                        payload = json.dumps({
+                            "type": "request",
+                            "seq": seq,
+                            "params": {
+                                "download": {
+                                    "client_id": uid,
+                                    "channels": [0],
+                                    "media_type": 2,
+                                    "start_time": str(start),
+                                    "player_id": tapo.playerID,
+                                },
+                                "method": "get",
+                            },
+                        })
+                        image: Optional[bytes] = None
+                        stream = session.transceive(payload, no_data_timeout=THUMB_TIMEOUT)
+                        try:
+                            async for resp in stream:
+                                if resp.mimetype == "image/jpeg":
+                                    image = bytes(resp.plaintext)
+                                    # Stop as soon as the JPEG arrives: some firmware never sends
+                                    # stream_status=finished and would burn the full timeout.
+                                    break
+                                if resp.mimetype == "application/json":
+                                    try:
+                                        data = json.loads(resp.plaintext.decode())
+                                    except (ValueError, AttributeError):
+                                        continue
+                                    params = data.get("params") or {}
+                                    if data.get("type") == "response" and params.get("error_code", 0) not in (0, None):
+                                        break
+                                    if params.get("event_type") == "stream_status" and params.get("status") == "finished":
+                                        break
+                        finally:
+                            try:
+                                await stream.aclose()
+                            except Exception:  # noqa: BLE001
+                                pass
+                        url = _data_url(image) if image else None
+                        out[str(start)] = url
                         if image:
                             with open(os.path.join(folder, f"{start}.jpg"), "wb") as f:
                                 f.write(image)
-                except StopAsyncIteration:
-                    pass
-                finally:
-                    await images.aclose()
+                        send({"event": "thumbnail", "start": start, "url": url})
 
             asyncio.run(fetch())
         except Exception as exc:  # noqa: BLE001 - camera busy: asked again later
@@ -478,7 +524,9 @@ class Session:
         listed: List[Dict[str, str]] = []
         if presets or how == "none":
             try:
-                found = tapo.getPresets() or {}
+                raw_presets = tapo.executeFunction("getPresetConfig", {"preset": {"name": ["preset"]}})
+                found = tapo.processPresetsResponse(raw_presets) or {}
+                tapo.presets = found
                 listed = [{"id": str(k), "name": str(v)} for k, v in found.items()]
                 if how == "none":
                     pan_tilt = presets = True
@@ -518,14 +566,197 @@ class Session:
         tapo = self._need()
         if not self.ptz.get("presets"):
             raise HelperError("ERR_PTZ_UNSUPPORTED", "This camera has no saved positions.")
+        preset_id = str(req.get("preset_id", "")).strip()
+        if not preset_id:
+            raise HelperError("ERR_INPUT", "Saved position id is required.")
+        if not self.motor_lock.acquire(blocking=False):
+            raise HelperError("ERR_PTZ_BUSY", "The camera is still moving.")
+        started = time.monotonic()
         try:
-            tapo.setPreset(str(req.get("id", "")))
+            # Call motorMoveToPreset directly so integer preset IDs from firmware
+            # never trip pytapo.setPreset()'s `str(id) in self.presets` check.
+            tapo.executeFunction("motorMoveToPreset", {"preset": {"goto_preset": {"id": preset_id}}})
         except Exception as exc:
-            raise HelperError("ERR_PTZ_MOVE", str(exc))
+            msg = str(exc)
+            print(f"saved position {preset_id} failed after {time.monotonic() - started:.1f}s: {msg}", file=sys.stderr)
+            if "-64321" in msg or "-64302" in msg:
+                raise HelperError("ERR_PTZ_PRESET_MISSING", msg)
+            raise HelperError("ERR_PTZ_MOVE", msg)
+        finally:
+            self.motor_lock.release()
+        print(f"saved position {preset_id} answered in {time.monotonic() - started:.1f}s", file=sys.stderr)
+        return {}
+
+    # -- two-way audio --------------------------------------------------------
+    @staticmethod
+    def _has_section(raw: Any, group: str, key: str) -> bool:
+        if not isinstance(raw, dict):
+            return False
+        for root in (raw, raw.get("result") if isinstance(raw.get("result"), dict) else None):
+            sec = (root or {}).get(group, {}).get(key) if root else None
+            if isinstance(sec, dict) and sec:
+                return True
+        return False
+
+    def _detect_two_way_audio(self, tapo: Tapo) -> bool:
+        """True when the camera reports a built-in speaker (checked during login)."""
+        # Modern firmware rejects pytapo's own getAudioConfig/getAudioSpec with -40209
+        # because they embed `"method": "get"` inside params; use the exact format
+        # pytapo.getMost() sends first, then fall back to the legacy methods.
+        checks = (
+            (
+                "audio_config.speaker (wrapped)",
+                lambda: tapo.executeFunction(
+                    "getAudioConfig",
+                    {"audio_config": {"name": ["speaker", "microphone", "record_audio"]}},
+                ),
+                "audio_config",
+                "speaker",
+            ),
+            (
+                "audio_capability.device_speaker (wrapped)",
+                lambda: tapo.executeFunction(
+                    "getAudioSpec",
+                    {"audio_capability": {"name": ["device_speaker", "device_microphone"]}},
+                ),
+                "audio_capability",
+                "device_speaker",
+            ),
+            ("audio_capability.device_speaker", tapo.getAudioSpec, "audio_capability", "device_speaker"),
+            ("audio_config.speaker", tapo.getAudioConfig, "audio_config", "speaker"),
+        )
+        for label, ask, group, key in checks:
+            try:
+                if self._has_section(ask(), group, key):
+                    print(f"two-way audio: True (found by {label})", file=sys.stderr)
+                    return True
+            except Exception as exc:  # noqa: BLE001
+                print(f"two-way audio check ({label}) failed: {exc}", file=sys.stderr)
+        print("two-way audio: False", file=sys.stderr)
+        return False
+
+    @staticmethod
+    def _enqueue_audio(queue: asyncio.Queue, chunk: Optional[bytes]) -> None:
+        if chunk is None:
+            while queue.full():
+                try:
+                    queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
+            try:
+                queue.put_nowait(None)
+            except asyncio.QueueFull:
+                pass
+            return
+        if queue.full():
+            try:
+                queue.get_nowait()  # drop oldest so real-time voice never lags
+            except asyncio.QueueEmpty:
+                pass
+        try:
+            queue.put_nowait(chunk)
+        except asyncio.QueueFull:
+            pass
+
+    async def _talk_runner(self, tapo: Tapo, ready: threading.Event, err_box: List[Optional[BaseException]]) -> None:
+        loop = asyncio.get_running_loop()
+        queue: asyncio.Queue = asyncio.Queue(maxsize=12)
+        started = False
+        chunks_sent = 0
+        bytes_sent = 0
+        try:
+            async with Talk(tapo) as talk:
+                self._talk_loop_ref = loop
+                self._talk_queue = queue
+                started = True
+                ready.set()
+                print("two-way audio: started", file=sys.stderr)
+                while True:
+                    chunk = await queue.get()
+                    if chunk is None:
+                        break
+                    await talk.write(chunk)
+                    chunks_sent += 1
+                    bytes_sent += len(chunk)
+        except BaseException as exc:  # noqa: BLE001
+            if not started:
+                err_box[0] = exc
+                ready.set()
+            else:
+                print(f"two-way audio ended with error: {exc}", file=sys.stderr)
+                send({"event": "talk_stopped", "code": "ERR_TALK_FAILED", "message": str(exc)})
+        finally:
+            self._talk_loop_ref = None
+            self._talk_queue = None
+            if started:
+                print(f"two-way audio: stopped (sent {chunks_sent} chunks, {bytes_sent} bytes)", file=sys.stderr)
+
+    def talk_start(self, req: Dict[str, Any]) -> Dict[str, Any]:
+        tapo = self._need()
+        if not self.two_way_audio:
+            raise HelperError("ERR_TALK_UNSUPPORTED", "This camera does not report a speaker.")
+        with self.talk_lock:
+            if self._talk_thread is not None and self._talk_thread.is_alive():
+                return {"active": True}
+            ready = threading.Event()
+            err_box: List[Optional[BaseException]] = [None]
+            thread = threading.Thread(
+                target=lambda: asyncio.run(self._talk_runner(tapo, ready, err_box)),
+                daemon=True,
+            )
+            self._talk_thread = thread
+            thread.start()
+        if not ready.wait(timeout=12.0):
+            self.talk_stop({})
+            raise HelperError("ERR_CAMERA_TIMEOUT", "The camera did not open the speaker connection in time.")
+        if err_box[0] is not None:
+            exc = err_box[0]
+            low = str(exc).lower()
+            if "already in use" in low or any(str(c) in low for c in BUSY_CODES):
+                raise HelperError("ERR_TALK_BUSY", str(exc))
+            if "refused talk" in low or "-40209" in low or "-40106" in low:
+                raise HelperError("ERR_TALK_UNSUPPORTED", str(exc))
+            raise HelperError("ERR_TALK_FAILED", str(exc))
+        return {"active": True}
+
+    def talk_audio(self, req: Dict[str, Any]) -> None:
+        loop = self._talk_loop_ref
+        queue = self._talk_queue
+        if loop is None or queue is None or loop.is_closed():
+            return
+        raw = req.get("data")
+        if not isinstance(raw, str) or not raw:
+            return
+        try:
+            chunk = base64.b64decode(raw)
+        except Exception:  # noqa: BLE001
+            return
+        if not chunk:
+            return
+        try:
+            loop.call_soon_threadsafe(self._enqueue_audio, queue, chunk)
+        except RuntimeError:
+            pass
+
+    def talk_stop(self, req: Dict[str, Any]) -> Dict[str, Any]:
+        with self.talk_lock:
+            loop = self._talk_loop_ref
+            queue = self._talk_queue
+            thread = self._talk_thread
+            self._talk_thread = None
+        if loop is not None and queue is not None and not loop.is_closed():
+            try:
+                loop.call_soon_threadsafe(self._enqueue_audio, queue, None)
+            except RuntimeError:
+                pass
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=4.0)
         return {}
 
     def disconnect(self, req: Dict[str, Any]) -> Dict[str, Any]:
         self.cancel.set()
+        self.talk_stop({})
+        self.two_way_audio = False
         self.tapo = None
         return {}
 
@@ -570,6 +801,10 @@ def main() -> None:
                 result = session.ptz_move(req)
             elif cmd == "ptz_goto":
                 result = session.ptz_goto(req)
+            elif cmd == "talk_start":
+                result = session.talk_start(req)
+            elif cmd == "talk_stop":
+                result = session.talk_stop(req)
             elif cmd == "disconnect":
                 result = session.disconnect(req)
             else:
@@ -588,12 +823,15 @@ def main() -> None:
             send({"id": None, "ok": False, "code": "ERR_PROTOCOL", "message": "Bad JSON line."})
             continue
         cmd = req.get("cmd")
-        if cmd == "cancel":
+        if cmd == "talk_audio":
+            session.talk_audio(req)
+        elif cmd == "cancel":
             # Commands are read in order, so this is the download read last.
             print("cancel received", file=sys.stderr)
             session.cancel.set()
             send({"id": req.get("id"), "ok": True, "result": {}})
         elif cmd == "shutdown":
+            session.talk_stop({})
             send({"id": req.get("id"), "ok": True, "result": {}})
             break
         elif cmd == "download":

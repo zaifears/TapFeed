@@ -21,6 +21,7 @@ fn defaults() -> Map<String, Value> {
         "check_updates": true,
         "skipped_version": "",
         "login_method": "",
+        "talk_mic_id": "",
     });
     v.as_object().cloned().unwrap()
 }

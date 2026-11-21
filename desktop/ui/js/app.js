@@ -158,6 +158,7 @@ function setView(view) {
   if (view === "about") renderAbout();
   if (view === "downloads") renderDownloads();
   if (view === "camera") requestAnimationFrame(syncRect);
+  else if (state.talk !== "off") stopTalk();
   updateVideoVisibility();
 }
 
@@ -329,7 +330,7 @@ $("loginForm").addEventListener("submit", async (e) => {
       host, username, password, cloudPassword: $("cloudToggle").checked ? cloud : null, remember: $("remember").checked,
     });
     state.connected = true;
-    state.device = { ...info, host };
+    state.device = { ...info, host, twoWayAudio: !!info.two_way_audio };
     // Do not keep typed passwords in the page once signed in.
     $("password").value = "";
     $("cloudPassword").value = "";
@@ -392,6 +393,7 @@ $("host").addEventListener("input", () => {
 });
 
 $("btnSignOut").addEventListener("click", async () => {
+  stopTalk(false);
   await invoke("disconnect").catch(() => {});
   state.connected = false;
   state.device = null;
@@ -421,6 +423,7 @@ async function loadPtz() {
     invoke("log_line", { line: `pan/tilt check failed: ${err.code} ${err.message}` }).catch(() => {});
   }
   renderPtz();
+  renderTalk();
 }
 
 function renderPtz() {
@@ -481,6 +484,160 @@ window.addEventListener("keydown", (e) => {
   e.preventDefault();
   const [dx, dy] = MOVES[key];
   ptzCall("ptz_move", { dx, dy });
+});
+
+// ---------------------------------------------------------------- two-way audio
+// Shown only when the camera reported a speaker at login.
+state.talk = "off"; // "off" | "starting" | "on"
+state.micId = "";
+let talkStream = null;
+let talkCtx = null;
+let talkNode = null;
+let talkSrc = null;
+let talkSink = null;
+
+function bytesToBase64(bytes) {
+  let s = "";
+  for (let i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]);
+  return btoa(s);
+}
+
+function renderTalk() {
+  const live = state.status.mode === "live";
+  const supported = !!state.device?.twoWayAudio;
+  if (!live && state.talk !== "off") {
+    stopTalk();
+    return;
+  }
+  const btn = $("btnTalk");
+  btn.hidden = !(supported && live);
+  btn.classList.toggle("is-starting", state.talk === "starting");
+  btn.classList.toggle("is-talking", state.talk === "on");
+  btn.setAttribute("aria-pressed", String(state.talk === "on"));
+  btn.disabled = state.talk === "starting";
+  const textKey = state.talk === "starting" ? "talk.connecting" : state.talk === "on" ? "talk.talking" : "talk.start";
+  $("talkLabel").textContent = t(textKey);
+  const tip = t(state.talk === "on" ? "talk.stop" : "talk.start");
+  btn.setAttribute("aria-label", tip);
+  btn.title = tip;
+  $("talkPlate").hidden = !(supported && live && state.talk === "on");
+}
+
+function releaseMic() {
+  if (talkNode) {
+    talkNode.port.onmessage = null;
+    try { talkNode.disconnect(); } catch {}
+    talkNode = null;
+  }
+  if (talkSrc) {
+    try { talkSrc.disconnect(); } catch {}
+    talkSrc = null;
+  }
+  if (talkSink) {
+    try { talkSink.disconnect(); } catch {}
+    talkSink = null;
+  }
+  if (talkStream) {
+    talkStream.getTracks().forEach((tr) => tr.stop());
+    talkStream = null;
+  }
+  if (talkCtx) {
+    talkCtx.close().catch(() => {});
+    talkCtx = null;
+  }
+}
+
+async function startTalk() {
+  if (state.talk !== "off" || !state.device?.twoWayAudio) return;
+  state.talk = "starting";
+  renderTalk();
+  try {
+    if (!navigator.mediaDevices?.getUserMedia) {
+      throw { code: "ERR_MIC_UNAVAILABLE", message: "getUserMedia is not available" };
+    }
+    const audioBase = { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 };
+    try {
+      try {
+        talkStream = await navigator.mediaDevices.getUserMedia({
+          audio: state.micId ? { ...audioBase, deviceId: { exact: state.micId } } : audioBase,
+        });
+      } catch (firstErr) {
+        // Saved mic was unplugged or renamed: fall back to the system default.
+        if (state.micId && (firstErr?.name === "OverconstrainedError" || firstErr?.name === "NotFoundError")) {
+          talkStream = await navigator.mediaDevices.getUserMedia({ audio: audioBase });
+        } else {
+          throw firstErr;
+        }
+      }
+      const micLabel = talkStream.getAudioTracks()[0]?.label || "unknown";
+      invoke("log_line", { line: `two-way audio mic: ${micLabel}` }).catch(() => {});
+    } catch (micErr) {
+      const name = micErr?.name || "";
+      if (name === "NotAllowedError" || name === "PermissionDeniedError" || name === "SecurityError") {
+        throw { code: "ERR_MIC_DENIED", message: String(micErr) };
+      }
+      throw { code: "ERR_MIC_UNAVAILABLE", message: String(micErr) };
+    }
+    talkCtx = new AudioContext();
+    if (talkCtx.state === "suspended") await talkCtx.resume();
+    await talkCtx.audioWorklet.addModule("js/talk-worklet.js");
+    talkSrc = talkCtx.createMediaStreamSource(talkStream);
+    talkNode = new AudioWorkletNode(talkCtx, "tapfeed-talk");
+    // Chromium/WebView2 only pulls an AudioWorkletNode when connected to destination.
+    talkSink = talkCtx.createGain();
+    talkSink.gain.value = 0;
+    talkSrc.connect(talkNode);
+    talkNode.connect(talkSink);
+    talkSink.connect(talkCtx.destination);
+
+    await invoke("talk_start");
+    if (state.talk !== "starting") {
+      releaseMic();
+      invoke("talk_stop").catch(() => {});
+      return;
+    }
+    talkNode.port.onmessage = (e) => {
+      if (state.talk !== "on") return;
+      const chunk = e.data;
+      if (chunk instanceof Uint8Array && chunk.length) {
+        invoke("talk_audio", { data: bytesToBase64(chunk) }).catch(() => {});
+      }
+    };
+    state.talk = "on";
+    renderTalk();
+  } catch (e) {
+    releaseMic();
+    state.talk = "off";
+    renderTalk();
+    const err = asError(e);
+    addProblem(err.code, err.message, "two-way audio");
+    toast(errorText(err.code).title, "error");
+  }
+}
+
+function stopTalk(notifyHelper = true) {
+  const wasActive = state.talk !== "off";
+  releaseMic();
+  state.talk = "off";
+  renderTalk();
+  if (wasActive && notifyHelper) {
+    invoke("talk_stop").catch(() => {});
+  }
+}
+
+function onTalkDropped(ev) {
+  if (state.talk === "off") return;
+  releaseMic();
+  state.talk = "off";
+  renderTalk();
+  const code = ev?.code || "ERR_TALK_FAILED";
+  addProblem(code, ev?.message || "", "two-way audio");
+  toast(errorText(code).title, "error");
+}
+
+$("btnTalk").addEventListener("click", () => {
+  if (state.talk === "on") stopTalk();
+  else if (state.talk === "off") startTalk();
 });
 
 async function startCamera() {
@@ -648,6 +805,7 @@ function renderPlayer(st) {
     requestAnimationFrame(syncRect);
   }
   renderPtz();
+  renderTalk();
   $("btnSnapshot").disabled = !st.ready || st.mode === "none" || st.state !== "playing";
   if (clip && st.path) {
     const c = playingClip(st);
@@ -961,23 +1119,28 @@ const thumbObserver = new IntersectionObserver((entries) => {
   loadThumbs();
 }, { root: $("clipList"), rootMargin: "200px" });
 
+function applyThumb(start, url) {
+  state.thumbs.set(start, url);
+  if (!url) return;
+  document.querySelectorAll(`img.clip-img[data-start="${start}"]`).forEach((img) => {
+    if (img.src !== url) img.src = url;
+  });
+}
+
 async function loadThumbs() {
   // The camera serves one recording stream at a time.
   // Wait for the whole queue: each fetch would hold the next download back.
   const downloading = state.downloads.some(isActive);
   if (thumbBusy || !thumbWanted.size || !state.connected || downloading) return;
   thumbBusy = true;
-  const starts = [...thumbWanted].slice(0, 8);
+  const starts = [...thumbWanted].slice(0, 12);
   starts.forEach((s) => thumbWanted.delete(s));
   try {
     const got = await invoke("clip_thumbnails", { starts });
     for (const s of starts) {
       // Missing key: camera busy, asked again on the next render.
       if (!(s in got)) continue;
-      state.thumbs.set(s, got[s]);
-      document.querySelectorAll(`img.clip-img[data-start="${s}"]`).forEach((img) => {
-        if (got[s]) img.src = got[s];
-      });
+      applyThumb(s, got[s]);
     }
   } catch (e) {
     const err = asError(e);
@@ -1256,6 +1419,8 @@ async function renderSettings() {
     return o;
   }));
   sel.value = languageCode();
+  state.micId = cfg.talk_mic_id || "";
+  renderMicPicker();
   $("sFolder").textContent = await invoke("output_dir").catch(() => "");
   $("checkUpdates").checked = cfg.check_updates !== false;
   renderCacheSize(await invoke("cache_size").catch(() => 0));
@@ -1281,6 +1446,51 @@ async function renderAbout() {
   $("vMpv").textContent = info.libmpv || na;
 }
 
+async function renderMicPicker(requestAccess = false) {
+  const sel = $("micDevice");
+  const def = el("option", null, t("settings.microphoneDefault"));
+  def.value = "";
+  const opts = [def];
+  try {
+    if (navigator.mediaDevices?.enumerateDevices) {
+      let list = (await navigator.mediaDevices.enumerateDevices()).filter((d) => d.kind === "audioinput");
+      const hidden = list.length === 0 || list.every((d) => !d.deviceId || !d.label);
+      if (hidden && navigator.mediaDevices.getUserMedia) {
+        let shouldAsk = requestAccess;
+        if (!shouldAsk && navigator.permissions?.query) {
+          try {
+            const p = await navigator.permissions.query({ name: "microphone" });
+            shouldAsk = p.state === "granted";
+          } catch {}
+        }
+        if (shouldAsk) {
+          try {
+            const tmp = await navigator.mediaDevices.getUserMedia({ audio: true });
+            tmp.getTracks().forEach((tr) => tr.stop());
+            list = (await navigator.mediaDevices.enumerateDevices()).filter((d) => d.kind === "audioinput");
+          } catch {}
+        }
+      }
+      let idx = 1;
+      for (const d of list) {
+        if (!d.deviceId || d.deviceId === "default" || d.deviceId === "communications") continue;
+        const o = el("option", null, d.label || `${t("settings.microphone")} ${idx++}`);
+        o.value = d.deviceId;
+        opts.push(o);
+      }
+    }
+  } catch {}
+  sel.replaceChildren(...opts);
+  sel.value = opts.some((o) => o.value === state.micId) ? state.micId : "";
+}
+
+$("btnRefreshMics").addEventListener("click", () => renderMicPicker(true));
+
+$("micDevice").addEventListener("change", (e) => {
+  state.micId = e.target.value;
+  invoke("settings_set", { patch: { talk_mic_id: state.micId } }).catch(() => {});
+});
+
 $("language").addEventListener("change", async (e) => {
   const code = await setLanguage(e.target.value);
   await invoke("settings_set", { patch: { language: code } }).catch(() => {});
@@ -1288,6 +1498,7 @@ $("language").addEventListener("change", async (e) => {
   if (state.connected) renderClips();
   renderSettings();
   renderQuality();
+  renderTalk();
   showShell(state.connected);
   if (state.selected) $("clipsTitle").textContent = fmtDay(fromIso(state.selected));
 });
@@ -1351,6 +1562,7 @@ async function boot() {
   await initI18n(cfg.language || "en");
   apply(document);
   state.quality = cfg.live_stream_quality === "SD" ? "SD" : "HD";
+  state.micId = cfg.talk_mic_id || "";
   renderQuality();
   loadProblems();
   renderProblemCount();
@@ -1361,6 +1573,11 @@ async function boot() {
   await appWindow.show().catch(() => {});
   (state.dialogOpen ? null : $(($("host").value && $("username").value && $("password").value) ? "btnConnect" : "host"))?.focus();
   listen("downloads", (e) => onDownloads(e.payload));
+  listen("talk_stopped", (e) => onTalkDropped(e.payload));
+  listen("thumbnail", (e) => {
+    const { start, url } = e.payload || {};
+    if (start != null) applyThumb(Number(start), url ?? null);
+  });
   invoke("downloads").then(onDownloads).catch(() => {});
   pollPlayer();
   setTimeout(async () => {

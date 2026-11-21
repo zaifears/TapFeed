@@ -164,9 +164,19 @@ impl Helper {
 
     /// Fire-and-forget (used for cancel, which must not queue behind a download).
     pub fn send(&self, cmd: &str) {
+        self.send_args(cmd, json!({}));
+    }
+
+    /// Fire-and-forget with arguments (used for streaming talk audio chunks).
+    pub fn send_args(&self, cmd: &str, mut args: Value) {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        if !args.is_object() {
+            args = json!({});
+        }
+        args["id"] = json!(id);
+        args["cmd"] = json!(cmd);
         if let Some(p) = self.proc.lock().unwrap().as_mut() {
-            let _ = writeln!(p.stdin, "{}", json!({"id": id, "cmd": cmd}));
+            let _ = writeln!(p.stdin, "{args}");
             let _ = p.stdin.flush();
         }
     }

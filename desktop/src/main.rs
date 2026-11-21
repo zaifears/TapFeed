@@ -217,7 +217,7 @@ fn settings_get() -> Map<String, Value> {
 fn settings_set(patch: Map<String, Value>) -> Res<Map<String, Value>> {
     let allowed = [
         "language", "check_updates", "skipped_version", "live_stream_quality",
-        "live_stream_muted", "live_stream_volume",
+        "live_stream_muted", "live_stream_volume", "talk_mic_id",
     ];
     let clean: Map<String, Value> = patch.into_iter().filter(|(k, _)| allowed.contains(&k.as_str())).collect();
     config::update(&clean).map_err(|e| err("ERR_SETTINGS", e))
@@ -405,7 +405,27 @@ async fn ptz_move(app: State<'_, App>, dx: i32, dy: i32) -> Res<Value> {
 
 #[tauri::command]
 async fn ptz_goto(app: State<'_, App>, id: String) -> Res<Value> {
-    app.helper.call("ptz_goto", json!({ "id": id }), PTZ).await
+    // Use "preset_id" — Helper::call sets "id" to the JSON-RPC request number.
+    app.helper.call("ptz_goto", json!({ "preset_id": id }), PTZ).await
+}
+
+// ---------------------------------------------------------------------------
+// two-way audio (only when the camera reports a speaker at login)
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+async fn talk_start(app: State<'_, App>) -> Res<Value> {
+    app.helper.call("talk_start", json!({}), PTZ).await
+}
+
+#[tauri::command]
+fn talk_audio(app: State<'_, App>, data: String) {
+    app.helper.send_args("talk_audio", json!({ "data": data }));
+}
+
+#[tauri::command]
+async fn talk_stop(app: State<'_, App>) -> Res<Value> {
+    app.helper.call("talk_stop", json!({}), SHORT).await
 }
 
 // ---------------------------------------------------------------------------
@@ -897,6 +917,14 @@ fn discard_partial(handle: &AppHandle, path: &str) {
 }
 
 fn on_helper_event(handle: &AppHandle, ev: Value) {
+    if ev["event"] == "talk_stopped" {
+        let _ = handle.emit("talk_stopped", ev);
+        return;
+    }
+    if ev["event"] == "thumbnail" {
+        let _ = handle.emit("thumbnail", ev);
+        return;
+    }
     if ev["event"] != "download_progress" {
         return;
     }
@@ -1067,7 +1095,8 @@ fn main() {
             recording_dates, list_recordings, clip_thumbnails, view_clip, cache_size, clear_cache, set_video_rect, set_video_visible, start_live,
             play_file, player_control, player_status, queue_download, cancel_download, downloads,
             clear_finished_downloads, open_path, reveal_path, output_dir, open_link, check_update,
-            user_locales, open_locales_folder, log_line, test_camera, take_screenshot, open_external, ptz_info, ptz_move, ptz_goto
+            user_locales, open_locales_folder, log_line, test_camera, take_screenshot, open_external,
+            ptz_info, ptz_move, ptz_goto, talk_start, talk_audio, talk_stop
         ])
         .build(tauri::generate_context!())
         .expect("failed to start TapFeed")

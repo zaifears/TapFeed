@@ -23,7 +23,7 @@ pycparser==3.0
 pycryptodome==3.23.0
 pyinstaller==6.22.3
 pyinstaller-hooks-contrib==2026.7
-pytapo==3.4.31
+pytapo==3.4.34
 python-kasa==0.10.2
 requests==2.34.2
 rtp==0.0.4

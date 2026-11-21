@@ -12,7 +12,7 @@ Previously named **Tapo-Viewer** ([old address](https://github.com/zaifears/tapo
 [![Platform](https://img.shields.io/badge/Platform-Windows%2010%20%7C%2011-0078D6?style=for-the-badge&logo=windows&logoColor=white)](https://github.com/zaifears/TapFeed)
 [![Built with Rust](https://img.shields.io/badge/Built%20with-Rust-B7410E?style=for-the-badge&logo=rust&logoColor=white)](https://www.rust-lang.org/)
 [![UI](https://img.shields.io/badge/UI-Tauri%202-24C8DB?style=for-the-badge&logo=tauri&logoColor=white)](https://tauri.app/)
-[![Powered by PyTapo](https://img.shields.io/badge/Powered%20By-PyTapo%20v3.4.31-00A4E4?style=for-the-badge&logo=github&logoColor=white)](https://github.com/JurajNyiri/pytapo)
+[![Powered by PyTapo](https://img.shields.io/badge/Powered%20By-PyTapo%20v3.4.34-00A4E4?style=for-the-badge&logo=github&logoColor=white)](https://github.com/JurajNyiri/pytapo)
 [![License](https://img.shields.io/badge/License-MIT-green?style=for-the-badge)](LICENSE)
 [![Privacy](https://img.shields.io/badge/Camera%20traffic-Local%20only-success?style=for-the-badge)](#privacy)
 [![VirusTotal](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Fzaifears%2FTapFeed%2Fmain%2F.github%2Fbadges%2Fvirustotal.json&style=for-the-badge&logo=virustotal&logoColor=white)](docs/SECURITY-SCAN.md)
@@ -49,6 +49,7 @@ TapFeed (previously named Tapo-Viewer) is a free, open-source Windows app for TP
 | | |
 |---|---|
 | **Live view** | HD or SD, with sound, full screen and screenshots |
+| **Two-way audio** | Speak through the camera's speaker, shown only on supported models |
 | **Pan and tilt** | Arrow buttons and saved positions, only on cameras with a motor |
 | **SD card calendar** | Days with recordings are marked; pick one to see its clips |
 | **Downloads** | Saved as `.ts` video, one at a time, with progress and cancel |

@@ -211,6 +211,10 @@
     "title": "Settings",
     "language": "Language",
     "languageHint": "To add a language, open the language folder, copy _template.json to a new name such as de.json, translate the text and restart the app.",
+    "microphone": "Microphone",
+    "microphoneHint": "Used for two-way audio on cameras with a speaker.",
+    "microphoneDefault": "System default",
+    "microphoneRefresh": "Refresh microphones",
     "downloads": "Downloads folder",
     "cache": "Cache",
     "cacheHint": "Recordings you watched and detection images, so they open again without asking the camera. Kept under 1 GB; the oldest go first.",
@@ -533,6 +537,48 @@
         "Try the other direction.",
         "Wait a moment and try again."
       ]
+    },
+    "ERR_PTZ_PRESET_MISSING": {
+      "title": "Saved position is no longer available",
+      "explanation": "The camera reported that this saved position was deleted or is no longer valid.",
+      "steps": [
+        "Open the Tapo app and re-save this viewpoint, then sign in again."
+      ]
+    },
+    "ERR_TALK_UNSUPPORTED": {
+      "title": "Two-way audio is not available",
+      "explanation": "This camera does not support speaking through its speaker.",
+      "steps": []
+    },
+    "ERR_TALK_BUSY": {
+      "title": "The camera speaker is busy",
+      "explanation": "Another app or device is already speaking through this camera.",
+      "steps": [
+        "Close the Tapo app on your phone and try again."
+      ]
+    },
+    "ERR_TALK_FAILED": {
+      "title": "Two-way audio stopped",
+      "explanation": "The camera could not keep the speaker connection open.",
+      "steps": [
+        "Make sure your Tapo app password is entered on the Sign in screen.",
+        "Try selecting Talk again."
+      ]
+    },
+    "ERR_MIC_DENIED": {
+      "title": "Microphone permission was denied",
+      "explanation": "TapFeed needs access to your microphone to speak through the camera.",
+      "steps": [
+        "Allow microphone access for desktop apps in Windows Settings, Privacy and security, Microphone.",
+        "Select Talk again."
+      ]
+    },
+    "ERR_MIC_UNAVAILABLE": {
+      "title": "No microphone found",
+      "explanation": "Windows did not report a working microphone on this PC.",
+      "steps": [
+        "Plug in or turn on a microphone, then select Talk again."
+      ]
     }
   },
   "about": {
@@ -556,5 +602,12 @@
     "down": "Tilt down",
     "presets": "Saved positions",
     "edge": "The camera did not move. It may be at the end of its range."
+  },
+  "talk": {
+    "start": "Talk",
+    "stop": "Stop talking",
+    "talking": "Talking",
+    "connecting": "Connecting…",
+    "live": "Mic live"
   }
 }
