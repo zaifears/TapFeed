@@ -38,7 +38,7 @@ TapFeed (previously named Tapo-Viewer) is a free, open-source Windows app for TP
 
 **Camera**
 
-<img src="https://i.ibb.co.com/rKn0GZ12/feed-tapfeed.png" alt="TapFeed camera screen: Tapo live view, a month calendar marking days with SD card recordings, and the list of that day's recordings" width="100%" />
+<img src="https://i.ibb.co.com/C59n3G6v/image.png" alt="TapFeed camera screen: Tapo live view, a month calendar marking days with SD card recordings, and the list of that day's recordings" width="100%" />
 
 **Downloads**
 
